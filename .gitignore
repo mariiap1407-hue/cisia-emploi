@@ -20,3 +20,10 @@ outputs/logs/
 __pycache__/
 *.pyc
 .ipynb_checkpoints/
+
+# Filet de sécurité : aucun fichier de données ni de modèle, où qu'il soit
+*.csv
+*.parquet
+*.xlsx
+*.joblib
+*.pkl
