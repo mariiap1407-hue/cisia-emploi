@@ -1,0 +1,22 @@
+# Données personnelles (même pseudonymisées) : jamais dans Git
+data/raw/*
+!data/raw/.gitkeep
+
+# Modèles entraînés : versionnés par MLflow, pas par Git
+models/*
+!models/.gitkeep
+
+# Suivi des expériences MLflow (local)
+mlruns/
+mlflow.db
+
+# Journaux de l'API : contiennent des profils d'usagers
+outputs/logs/
+
+# Secrets (tokens, mots de passe)
+.env
+
+# Caches Python et Jupyter
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
