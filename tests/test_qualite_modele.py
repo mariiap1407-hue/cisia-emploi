@@ -51,10 +51,13 @@ def modele_de_controle(donnees_factices):
 
 
 @pytest.fixture(scope="module")
-def modele_a_accepter(modele_de_controle):
-    """Le modèle soumis au test d'acceptation : CISIA_MODELE s'il est donné, sinon le modèle de contrôle."""
+def modele_a_accepter(request):
+    """Le modèle soumis au test d'acceptation : CISIA_MODELE s'il est donné, sinon le modèle de contrôle.
+
+    Le modèle de contrôle n'est entraîné que s'il est nécessaire (pas quand on teste un candidat fourni).
+    """
     if not os.getenv("CISIA_MODELE"):
-        return modele_de_controle
+        return request.getfixturevalue("modele_de_controle")
     if not os.getenv("CISIA_REFERENCE"):
         pytest.fail("CISIA_MODELE exige CISIA_REFERENCE : un modèle s'évalue sur un jeu de référence "
                     "de même nature que ses données d'entraînement.")
