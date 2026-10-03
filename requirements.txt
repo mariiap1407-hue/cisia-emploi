@@ -1,18 +1,25 @@
-# Données, statistiques, visualisation
-pandas>=2.2
-numpy>=1.26
-scipy>=1.12
-matplotlib>=3.8
+# Dépendances de production : entraînement (scripts/) et API (api/)
+# Versions figées sur l'environnement conda "exam" (Python 3.12.14) le 03/10/2026
 
-# Modélisation
-scikit-learn>=1.5
-lightgbm>=4.3
-xgboost>=2.0
+# Données et calcul
+pandas==3.0.6
+numpy==2.5.3
+scipy==1.18.1
+joblib==1.6.0
 
-# Suivi des expériences
-mlflow>=2.14
+# Modèle
+scikit-learn==1.9.1
+lightgbm==4.7.0
 
-# Notebook et qualité du code
-jupyterlab
-pytest>=8.0
-ruff>=0.5
+# Suivi des expériences et versions du modèle
+mlflow==3.16.1
+skops==0.16.0
+
+# Graphiques enregistrés dans MLflow (matrice de confusion)
+matplotlib==3.11.2
+
+# API
+fastapi==0.141.1
+uvicorn==0.54.0
+pydantic==2.13.5
+python-dotenv==1.2.3

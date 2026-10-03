@@ -1,0 +1,13 @@
+# Dépendances de développement : production + notebook, tests et qualité du code
+-r requirements.txt
+
+# Tests et qualité du code
+pytest==9.1.1
+httpx==0.28.1
+ruff==0.16.9
+
+# Notebook (comparaison des modèles, graphiques)
+jupyterlab==4.6.4
+seaborn==0.13.2
+xgboost==3.4.1
+catboost==1.2.10

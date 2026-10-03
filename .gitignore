@@ -5,21 +5,36 @@ data/raw/*
 # Modèles entraînés : versionnés par MLflow, pas par Git
 models/*
 !models/.gitkeep
+model/
 
 # Suivi des expériences MLflow (local)
 mlruns/
-mlflow.db
+mlartifacts/
+mlflow-data/
+*.db
 
-# Journaux de l'API : contiennent des profils d'usagers
-outputs/logs/
+# Journaux de l'API et base SQLite : contiennent des profils d'usagers
+outputs/
 
-# Secrets (tokens, mots de passe)
+# Secrets (tokens, mots de passe, clé de réentraînement)
 .env
 
-# Caches Python et Jupyter
+# Notebook d'étude : transmis par e-mail avec le journal de bord, pas publié sur le dépôt public
+notebooks/
+
+# Journaux d'entraînement de CatBoost (recréés à chaque exécution)
+catboost_info/
+
+# Caches Python, Jupyter, pytest, ruff ; installation du module
 __pycache__/
 *.pyc
 .ipynb_checkpoints/
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+
+# Réglages personnels de l'éditeur
+.vscode/
 
 # Filet de sécurité : aucun fichier de données ni de modèle, où qu'il soit
 *.csv

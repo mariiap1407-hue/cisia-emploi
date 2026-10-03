@@ -1,0 +1,28 @@
+# Configuration du projet : le module cisia (dossier src/) devient installable avec `pip install -e .`
+# Les dépendances sont dans requirements.txt (production) et requirements-dev.txt (développement).
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cisia"
+version = "0.1.0"
+description = "Orientation des demandeurs d'emploi : prédiction du délai de retour à l'emploi (examen CISIA)"
+requires-python = ">=3.12"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+line-length = 110
+target-version = "py312"
+# Le notebook est le support de l'étude : il n'est pas soumis au linting
+extend-exclude = ["notebooks"]
+
+[tool.ruff.lint]
+# E : style (PEP 8), F : erreurs probables (variables inutilisées...), I : ordre des imports
+select = ["E", "F", "I"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
