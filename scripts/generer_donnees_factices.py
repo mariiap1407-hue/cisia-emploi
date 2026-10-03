@@ -6,7 +6,7 @@ il contient des données personnelles. Aucune ligne n'est issue des vraies donn�
 Trois fichiers sont créés dans data/factice/ :
 - entrainement.csv : pour entraîner un modèle de contrôle ;
 - reference.csv : même lien entre variables et classe, pour vérifier le quality gate ;
-- reference_derivee.csv : le lien entre la synthèse et la classe a changé (dérive),
+- reference_derivee.csv : le lien entre le profil, la synthèse et la classe a changé (dérive),
   pour vérifier que le quality gate bloque bien un modèle devenu mauvais.
 
 Usage : python scripts/generer_donnees_factices.py
@@ -40,10 +40,12 @@ DEPARTEMENTS = ["01", "13", "21", "2A", "33", "35", "57", "59", "62", "69", "75"
 def generer(n, rng, derive=False):
     classe = rng.choice([0, 1, 2], size=n, p=[0.37, 0.45, 0.18])
 
-    # Variables tabulaires liées à la classe (lien volontairement simple)
-    age = np.clip(rng.normal(36 + 6 * classe, 11), 18, 63).round()
-    anciennete = np.clip(rng.exponential(3.5 - classe, n), 0, 20).round(1)
-    indice_diplome = np.clip(rng.normal(2.2 - 0.8 * classe, 0.9), 0, 3).round().astype(int)
+    # Variables tabulaires liées à la classe (lien volontairement simple).
+    # Dérive : le lien entre le profil et la classe s'inverse pour les classes 0 et 2
+    profil = 2 - classe if derive else classe
+    age = np.clip(rng.normal(36 + 6 * profil, 11), 18, 63).round()
+    anciennete = np.clip(rng.exponential(3.5 - profil, n), 0, 20).round(1)
+    indice_diplome = np.clip(rng.normal(2.2 - 0.8 * profil, 0.9), 0, 3).round().astype(int)
     diplome = np.array(DIPLOMES, dtype=object)[indice_diplome]
 
     # Synthèse : 80 % du temps, une phrase typique de la classe ; sinon, une phrase au hasard
