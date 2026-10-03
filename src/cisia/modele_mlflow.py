@@ -15,6 +15,7 @@ précédente reste disponible pour un retour en arrière.
 
 import json
 import os
+import tempfile
 from datetime import datetime
 from pathlib import Path
 
@@ -46,18 +47,43 @@ def options_modele(chemins):
     }
 
 
-def publier_en_production(chemins, dossier_production, identifiant, infos):
-    """Écrit le modèle complet dans dossier_production/<identifiant>/, puis le déclare en service."""
+def publier_en_production(chemins, dossier_production, identifiant, infos, publier_alias=None):
+    """Met en service le modèle complet : dossier_production/<identifiant>/, puis actuelle.json, puis alias.
+
+    Le fichier actuelle.json fait foi (c'est lui que lit l'API). L'alias du registre MLflow doit
+    désigner la même version : si sa mise à jour échoue (publier_alias lève une erreur), l'ancien
+    actuelle.json est rétabli, pour que l'API et le registre ne désignent jamais deux versions
+    différentes. Une seule mise en production à la fois est prévue (entraînements successifs).
+    """
     dossier_production = Path(dossier_production)
     dossier_production.mkdir(parents=True, exist_ok=True)
     mlflow.pyfunc.save_model(path=dossier_production / identifiant, **options_modele(chemins))
 
-    # Déclaration de la version en service : fichier temporaire puis remplacement en une opération
+    chemin_actuelle = dossier_production / FICHIER_ACTUELLE
+    ancienne = chemin_actuelle.read_bytes() if chemin_actuelle.exists() else None
     actuelle = {"dossier": identifiant, "date": datetime.now().isoformat(timespec="seconds"), **infos}
-    temporaire = dossier_production / (FICHIER_ACTUELLE + ".tmp")
-    temporaire.write_text(json.dumps(actuelle, ensure_ascii=False, indent=2), encoding="utf-8")
-    os.replace(temporaire, dossier_production / FICHIER_ACTUELLE)
+    contenu = json.dumps(actuelle, ensure_ascii=False, indent=2).encode("utf-8")
+    ecrire_en_une_operation(chemin_actuelle, contenu)
+
+    if publier_alias is not None:
+        try:
+            publier_alias()
+        except Exception:
+            # Retour à la situation précédente : l'ancienne version reste en service
+            if ancienne is None:
+                chemin_actuelle.unlink()
+            else:
+                ecrire_en_une_operation(chemin_actuelle, ancienne)
+            raise
     return dossier_production / identifiant
+
+
+def ecrire_en_une_operation(chemin, contenu):
+    """Écrit un fichier temporaire au nom unique, puis remplace le fichier visé en une seule opération."""
+    descripteur, temporaire = tempfile.mkstemp(dir=chemin.parent, prefix=chemin.name + ".", suffix=".tmp")
+    with os.fdopen(descripteur, "wb") as fichier:
+        fichier.write(contenu)
+    os.replace(temporaire, chemin)
 
 
 def dossier_en_service(dossier_production):

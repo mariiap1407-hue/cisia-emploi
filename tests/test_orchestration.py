@@ -6,11 +6,13 @@ avec une base MLflow temporaire : rien ne touche à models/ ni à mlflow.db du p
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
 
 import mlflow
+import pytest
 
 from cisia import artefacts
 from cisia.decision import charger_regle
@@ -22,10 +24,10 @@ from cisia.preparation import charger_donnees, decouper, nettoyer, separer_x_y
 RACINE = Path(__file__).resolve().parents[1]
 
 
-def lancer(dossier, *options):
+def lancer(dossier, *options, donnees="data/factice/entrainement.csv"):
     environnement = {**os.environ, "MLFLOW_TRACKING_URI": f"sqlite:///{(dossier / 'mlflow.db').as_posix()}"}
     return subprocess.run(
-        [sys.executable, "scripts/entrainer.py", "--donnees", "data/factice/entrainement.csv",
+        [sys.executable, "scripts/entrainer.py", "--donnees", str(donnees),
          "--sans-recherche", "--sortie", str(dossier / "models"), *options],
         cwd=RACINE, env=environnement, capture_output=True, encoding="utf-8",
     )
@@ -102,3 +104,33 @@ def test_mise_en_production_puis_changement_de_version(donnees_factices, tmp_pat
     obtenu = charger_modele_en_service(production).predict(usagers)
     attendu = predire_usagers(composants["version_b"], usagers)
     assert (obtenu["classe"].to_numpy() == attendu["classe"].to_numpy()).all()
+
+
+def test_fichier_renomme_sans_mot_cle_refuse(donnees_factices, tmp_path):
+    # Fichier factice copié sous un nom neutre : il est reconnu à son contenu (identifiants FACTICE_)
+    copie = tmp_path / "donnees_entrainement.csv"
+    shutil.copy(donnees_factices / "entrainement.csv", copie)
+    resultat = lancer(tmp_path, "--promouvoir", donnees=copie)
+    assert "Refusé" in resultat.stderr, resultat.stdout + resultat.stderr
+    assert not (tmp_path / "models" / "production").exists()
+
+
+def test_alias_en_echec_ancienne_version_reste_en_service(donnees_factices, tmp_path):
+    entrainement, _ = decouper(charger_donnees(donnees_factices / "entrainement.csv"))
+    X_train, y_train = separer_x_y(nettoyer(entrainement))
+    regle = charger_regle(RACINE / "config" / "regle_decision.json")
+    modele, correction = entrainer(X_train, y_train, regle)
+    production = tmp_path / "production"
+    chemins = artefacts.sauvegarder(tmp_path / "candidats" / "a", modele, correction, regle, {})
+    publier_en_production(chemins, production, "version_a", {})
+
+    def alias_en_panne():
+        raise RuntimeError("registre MLflow indisponible")
+
+    chemins = artefacts.sauvegarder(tmp_path / "candidats" / "b", modele, correction, regle, {})
+    with pytest.raises(RuntimeError):
+        publier_en_production(chemins, production, "version_b", {}, publier_alias=alias_en_panne)
+
+    # L'API et le registre continuent de désigner la même version : la précédente
+    assert dossier_en_service(production) == production / "version_a"
+    assert not list(production.glob("*.tmp"))

@@ -13,7 +13,7 @@ Reprend la logique du notebook (sections 5.4 à 6.6) avec le code partagé de sr
 Garde-fous :
 - quality gate non respecté : la production en place n'est pas touchée et le script s'arrête
   avec le code 1 (une CI qui l'appelle s'arrête aussi) ;
-- données factices (chemin contenant « factice ») : expérience et modèle MLflow séparés
+- données factices (chemin contenant « factice » ou identifiants « FACTICE_ ») : expérience et modèle séparés
   (« cisia-orientation-controle »), et mise en production refusée.
 
 Ce que le script ne refait pas : le choix des réglages, de la méthode de recalibration et des seuils.
@@ -62,6 +62,7 @@ CHEMIN_REGLE = RACINE / "config" / "regle_decision.json"
 DOSSIER_MODELES = RACINE / "models"
 NOM_MODELE = "cisia-orientation"
 NOM_CONTROLE = "cisia-orientation-controle"   # entraînements sur données factices (CI, tests)
+PREFIXE_FACTICE = "FACTICE_"                  # identifiants créés par generer_donnees_factices.py
 
 # Les deux tours de la recherche sur grille (section 5.4)
 GRILLES = {
@@ -141,7 +142,11 @@ def main():
     for flux in (sys.stdout, sys.stderr):
         flux.reconfigure(encoding="utf-8")
 
-    donnees_factices = "factice" in Path(args.donnees).as_posix().lower()
+    # Données factices : repérées par leur chemin ET par leur contenu (identifiants « FACTICE_ »),
+    # pour qu'un fichier factice copié ailleurs ou renommé ne puisse pas être mis en production
+    donnees_brutes = charger_donnees(args.donnees)
+    donnees_factices = ("factice" in Path(args.donnees).as_posix().lower()
+                        or donnees_brutes["usager_id"].str.startswith(PREFIXE_FACTICE).any())
     if args.promouvoir and donnees_factices:
         sys.exit("Refusé : un modèle entraîné sur des données factices ne peut pas être mis en production.")
     nom_modele = NOM_CONTROLE if donnees_factices else NOM_MODELE
@@ -153,7 +158,7 @@ def main():
     mlflow.set_experiment(nom_modele)
 
     # 1. Données
-    entrainement, test = decouper(charger_donnees(args.donnees))
+    entrainement, test = decouper(donnees_brutes)
     X_train, y_train = separer_x_y(nettoyer(entrainement))
     X_test, y_test = separer_x_y(nettoyer(test))
     regle = charger_regle(args.regle)
@@ -214,11 +219,13 @@ def main():
                   + (f" et dans le registre (version {version})" if version else "")
                   + ", non mis en production (option --promouvoir).")
         else:
-            # D'abord le dossier de production, ensuite seulement l'alias du registre
-            dossier = publier_en_production(chemins, Path(args.sortie) / "production", run.info.run_id,
-                                            {"run_id": run.info.run_id, "version_registre": version})
-            if utiliser_registre:
+            # Dossier, puis actuelle.json, puis alias ; si l'alias échoue, l'ancienne version reste en service
+            def publier_alias():
                 MlflowClient().set_registered_model_alias(nom_modele, "production", str(version))
+
+            dossier = publier_en_production(chemins, Path(args.sortie) / "production", run.info.run_id,
+                                            {"run_id": run.info.run_id, "version_registre": version},
+                                            publier_alias if utiliser_registre else None)
             print(f"Quality gate respecté : version {version} mise en production "
                   f"(alias « production », dossier {dossier}).")
 
