@@ -93,8 +93,47 @@ def test_fichier_de_regle_du_depot():
     assert regle["methode_recalibration"] == "Logistique"
 
 
+REGLE_VALIDE = {"seuil_classe_2": 0.25, "seuil_garde_fou_classe_0": 0.08,
+                "methode_recalibration": "Logistique"}
+
+
+def ecrire_regle(dossier, **modifications):
+    regle = {**REGLE_VALIDE, **modifications}
+    chemin = dossier / "regle.json"
+    chemin.write_text(json.dumps(regle), encoding="utf-8")
+    return chemin
+
+
 def test_regle_avec_methode_inconnue_refusee(tmp_path):
+    with pytest.raises(ValueError):
+        charger_regle(ecrire_regle(tmp_path, methode_recalibration="Sigmoide"))
+
+
+def test_regle_avec_seuil_hors_bornes_refusee(tmp_path):
+    with pytest.raises(ValueError):
+        charger_regle(ecrire_regle(tmp_path, seuil_classe_2=1.5))
+    with pytest.raises(ValueError):
+        charger_regle(ecrire_regle(tmp_path, seuil_garde_fou_classe_0=-0.1))
+
+
+def test_regle_incomplete_refusee(tmp_path):
     chemin = tmp_path / "regle.json"
-    chemin.write_text(json.dumps({"methode_recalibration": "Sigmoide"}), encoding="utf-8")
+    chemin.write_text(json.dumps({"methode_recalibration": "Logistique"}), encoding="utf-8")
     with pytest.raises(ValueError):
         charger_regle(chemin)
+
+
+def test_regle_avec_seuils_absents_acceptee(tmp_path):
+    regle = charger_regle(ecrire_regle(tmp_path, seuil_classe_2=None, seuil_garde_fou_classe_0=None))
+    assert regle["seuil_classe_2"] is None
+
+
+def test_recalibration_refuse_une_cible_a_trois_classes():
+    # Erreur relevée en relecture : avec la cible 0/1/2, la correction renverrait le risque de la classe 1
+    with pytest.raises(ValueError):
+        ajuster_recalibrage("Logistique", np.array([0.1, 0.5, 0.9]), np.array([0, 1, 2]))
+
+
+def test_recalibration_refuse_une_cible_sans_classe_2():
+    with pytest.raises(ValueError):
+        ajuster_recalibrage("Logistique", np.array([0.1, 0.5]), np.array([0, 0]))

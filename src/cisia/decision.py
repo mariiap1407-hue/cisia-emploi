@@ -17,15 +17,25 @@ def logit(p):
     return np.log(p / (1 - p))
 
 
-def ajuster_recalibrage(methode, p, y):
-    """Apprend la correction de la probabilité de la classe 2 à partir de probabilités hors pli."""
+def ajuster_recalibrage(methode, p, y_classe_2):
+    """Apprend la correction de la probabilité de la classe 2 à partir de probabilités hors pli.
+
+    y_classe_2 est une cible BINAIRE : 1 si l'usager est en classe 2, 0 sinon,
+    soit (y == 2).astype(int). Passer la cible à 3 classes serait une erreur silencieuse :
+    la régression logistique apprendrait 3 classes et la correction renverrait le risque de la classe 1.
+    """
+    if methode not in METHODES:
+        raise ValueError(f"Méthode de recalibration inconnue : {methode}")
+    y_classe_2 = np.asarray(y_classe_2)
+    if not set(np.unique(y_classe_2)) <= {0, 1}:
+        raise ValueError("La cible de la recalibration doit être binaire (1 = classe 2, 0 = autre classe).")
+    if len(np.unique(y_classe_2)) < 2:
+        raise ValueError("La cible de la recalibration doit contenir des usagers de classe 2 et des autres.")
     if methode == "Aucune correction":
         return None
     if methode == "Logistique":                     # régression logistique sur les log-odds
-        return LogisticRegression().fit(logit(p).reshape(-1, 1), y)
-    if methode == "Isotonique":
-        return IsotonicRegression(out_of_bounds="clip").fit(p, y)
-    raise ValueError(f"Méthode de recalibration inconnue : {methode}")
+        return LogisticRegression().fit(logit(p).reshape(-1, 1), y_classe_2)
+    return IsotonicRegression(out_of_bounds="clip").fit(p, y_classe_2)
 
 
 def appliquer_recalibrage(methode, modele, p):
@@ -79,9 +89,20 @@ def presenter(probas_usager, risque_usager, seuil_classe_2, seuil_garde_fou):
 
 
 def charger_regle(chemin):
-    """Lit la règle de décision (seuils et méthode de recalibration) depuis le fichier de configuration."""
+    """Lit la règle de décision et vérifie qu'elle est utilisable.
+
+    Champs obligatoires : seuil_classe_2 et seuil_garde_fou_classe_0 (entre 0 et 1, ou null pour « absent »),
+    methode_recalibration (une des METHODES).
+    """
     with open(chemin, encoding="utf-8") as fichier:
         regle = json.load(fichier)
+    for champ in ["seuil_classe_2", "seuil_garde_fou_classe_0", "methode_recalibration"]:
+        if champ not in regle:
+            raise ValueError(f"Règle de décision incomplète : champ « {champ} » absent ({chemin})")
     if regle["methode_recalibration"] not in METHODES:
         raise ValueError(f"Méthode de recalibration inconnue : {regle['methode_recalibration']}")
+    for champ in ["seuil_classe_2", "seuil_garde_fou_classe_0"]:
+        seuil = regle[champ]
+        if seuil is not None and not (isinstance(seuil, (int, float)) and 0 <= seuil <= 1):
+            raise ValueError(f"Seuil invalide pour « {champ} » : {seuil} (attendu : entre 0 et 1, ou null)")
     return regle
