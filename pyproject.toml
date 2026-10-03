@@ -25,8 +25,8 @@ extend-exclude = ["notebooks"]
 select = ["E", "F", "I"]
 
 [tool.ruff.lint.isort]
-# Notre module, pour que ruff le classe à part dans l'ordre des imports
-known-first-party = ["cisia"]
+# Nos modules (code partagé et API), pour que ruff les classe à part dans l'ordre des imports
+known-first-party = ["cisia", "api"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
