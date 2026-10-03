@@ -4,32 +4,43 @@ Reprend la logique du notebook (sections 5.4 à 6.6) avec le code partagé de sr
 1. lecture, découpage 80 / 20 et nettoyage des données ;
 2. recherche sur grille en deux tours (un run MLflow imbriqué par combinaison), pour la traçabilité ;
 3. entraînement avec les réglages retenus dans le notebook, correction du risque, règle de décision ;
-4. évaluation sur le jeu de test, matrice de confusion ;
-5. sauvegarde dans models/, enregistrement dans le registre MLflow, alias « production »
-   seulement si le quality gate passe.
+4. évaluation de la chaîne complète sur le jeu de test, matrice de confusion, quality gate ;
+5. enregistrement du CANDIDAT (dossier models/candidats/<run>/ et version dans le registre MLflow) ;
+6. mise en production seulement si le quality gate passe ET si l'option --promouvoir est donnée :
+   modèle complet dans models/production/<run>/, déclaré en service dans models/production/actuelle.json,
+   puis alias « production » dans le registre.
+
+Garde-fous :
+- quality gate non respecté : la production en place n'est pas touchée et le script s'arrête
+  avec le code 1 (une CI qui l'appelle s'arrête aussi) ;
+- données factices (chemin contenant « factice ») : expérience et modèle MLflow séparés
+  (« cisia-orientation-controle »), et mise en production refusée.
 
 Ce que le script ne refait pas : le choix des réglages, de la méthode de recalibration et des seuils.
 Ils ont été décidés dans le notebook (validation croisée, puis validation croisée imbriquée pour la
 recalibration) ; le script les applique tels quels (REGLAGES_RETENUS, config/regle_decision.json).
 La correction est apprise sur des probabilités HORS PLI, jamais sur les prédictions du modèle
-sur ses propres données d'entraînement.
+sur ses propres données d'entraînement. La recherche sur grille est rejouée pour la traçabilité
+de l'étude ; pour un réentraînement de routine, --sans-recherche évite ce calcul inutile.
 
 Usage :
-    python scripts/entrainer.py                         # vraies données (poste local)
-    python scripts/entrainer.py --donnees data/factice/entrainement.csv --sans-recherche   # CI
+    python scripts/entrainer.py --promouvoir                       # vraies données, mise en production
+    python scripts/entrainer.py                                    # vraies données, candidat seulement
+    python scripts/entrainer.py --donnees data/factice/entrainement.csv --sans-recherche   # contrôle (CI)
 """
 
 import argparse
 import os
 import re
-import shutil
+import subprocess
+import sys
 import tempfile
 import unicodedata
 from datetime import datetime
 from pathlib import Path
 
 import mlflow
-import mlflow.sklearn
+import mlflow.pyfunc
 import pandas as pd
 from matplotlib.figure import Figure
 from matplotlib.patches import Rectangle
@@ -42,6 +53,7 @@ from cisia.decision import charger_regle
 from cisia.entrainement import entrainer, evaluer, predire
 from cisia.evaluation import CV, METRIQUES, verifier_seuils_qualite
 from cisia.modele import REGLAGES_RETENUS, construire_pipeline
+from cisia.modele_mlflow import options_modele, publier_en_production
 from cisia.preparation import charger_donnees, decouper, nettoyer, separer_x_y
 
 RACINE = Path(__file__).resolve().parents[1]
@@ -49,6 +61,7 @@ DONNEES_PAR_DEFAUT = RACINE / "data" / "raw" / "dataset_trajectoire_emploi.csv"
 CHEMIN_REGLE = RACINE / "config" / "regle_decision.json"
 DOSSIER_MODELES = RACINE / "models"
 NOM_MODELE = "cisia-orientation"
+NOM_CONTROLE = "cisia-orientation-controle"   # entraînements sur données factices (CI, tests)
 
 # Les deux tours de la recherche sur grille (section 5.4)
 GRILLES = {
@@ -98,29 +111,61 @@ def enregistrer_matrice_confusion(y_test, classes, dossier):
     return chemin
 
 
+def etat_du_code():
+    """Commit Git et présence de modifications non enregistrées (le run doit pouvoir être retracé)."""
+    try:
+        commit = subprocess.run(["git", "rev-parse", "HEAD"], cwd=RACINE, capture_output=True,
+                                text=True, check=True).stdout.strip()
+        modifie = bool(subprocess.run(["git", "status", "--porcelain"], cwd=RACINE, capture_output=True,
+                                      text=True, check=True).stdout.strip())
+    except (OSError, subprocess.CalledProcessError):
+        return "inconnu", True
+    return commit, modifie
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--donnees", default=DONNEES_PAR_DEFAUT, help="fichier CSV d'entraînement")
+    parser.add_argument("--regle", default=CHEMIN_REGLE, help="fichier de la règle de décision")
+    parser.add_argument("--sortie", default=DOSSIER_MODELES,
+                        help="dossier des modèles (candidats, production)")
     parser.add_argument("--sans-recherche", action="store_true",
-                        help="ne rejoue pas la recherche sur grille (plus rapide, utilisé dans la CI)")
+                        help="ne rejoue pas la recherche sur grille (plus rapide : CI, réentraînement)")
+    parser.add_argument("--promouvoir", action="store_true",
+                        help="met le modèle en production s'il passe le quality gate (désactivé par défaut)")
     args = parser.parse_args()
+
+    # Sorties en UTF-8 : sous Windows, quand la sortie est redirigée (tests, CI), l'encodage par défaut
+    # (cp1252) ne connaît pas certains caractères comme « → » et le script s'arrêtait en plein affichage
+    for flux in (sys.stdout, sys.stderr):
+        flux.reconfigure(encoding="utf-8")
+
+    donnees_factices = "factice" in Path(args.donnees).as_posix().lower()
+    if args.promouvoir and donnees_factices:
+        sys.exit("Refusé : un modèle entraîné sur des données factices ne peut pas être mis en production.")
+    nom_modele = NOM_CONTROLE if donnees_factices else NOM_MODELE
 
     # Par défaut : base SQLite locale à la racine du projet (ignorée par Git)
     suivi_par_defaut = f"sqlite:///{(RACINE / 'mlflow.db').as_posix()}"
     mlflow.set_tracking_uri(os.getenv("MLFLOW_TRACKING_URI", suivi_par_defaut))
     utiliser_registre = os.getenv("USE_REGISTRY", "true").lower() == "true"
-    mlflow.set_experiment("cisia-orientation")
+    mlflow.set_experiment(nom_modele)
 
     # 1. Données
     entrainement, test = decouper(charger_donnees(args.donnees))
     X_train, y_train = separer_x_y(nettoyer(entrainement))
     X_test, y_test = separer_x_y(nettoyer(test))
-    regle = charger_regle(CHEMIN_REGLE)
+    regle = charger_regle(args.regle)
+    commit, code_modifie = etat_du_code()
 
     with mlflow.start_run(run_name=f"entrainement-{datetime.now():%Y%m%d-%H%M}") as run:
         mlflow.log_params({
             "donnees": Path(args.donnees).name,
+            "donnees_sha256": artefacts.empreinte(args.donnees),
+            "donnees_factices": donnees_factices,
+            "git_commit": commit,
+            "code_modifie_non_commite": code_modifie,
             "n_entrainement": len(X_train),
             "n_test": len(X_test),
             **{k.replace("modele__", ""): v for k, v in REGLAGES_RETENUS.items()},
@@ -136,7 +181,7 @@ def main():
         # 3. Modèle final avec les réglages retenus dans le notebook, et correction du risque
         modele, correction = entrainer(X_train, y_train, regle)
 
-        # 4. Évaluation sur le jeu de test
+        # 4. Évaluation de la chaîne complète sur le jeu de test, et quality gate
         probas, risque, classes = predire(modele, correction, regle, X_test)
         resultats = evaluer(y_test, probas, risque, classes)
         mlflow.log_metrics({f"test_{nom_mlflow(k)}": v for k, v in resultats.items()})
@@ -144,41 +189,42 @@ def main():
             mlflow.log_artifact(enregistrer_matrice_confusion(y_test, classes, dossier_temporaire))
         for nom, valeur in resultats.items():
             print(f"  {nom:<30} {valeur}" if isinstance(valeur, int) else f"  {nom:<30} {valeur:.3f}")
-
-        # 5. Quality gate
         echecs = verifier_seuils_qualite(resultats)
         mlflow.log_metric("quality_gate_ok", int(not echecs))
 
-        # 6. Sauvegarde dans models/ : modèle, correction et règle ensemble
+        # 5. Candidat : dossier propre à ce run (jamais écrasé), puis modèle MLflow complet dans le registre
         infos = {"run_id": run.info.run_id, "date": datetime.now().isoformat(timespec="seconds"),
-                 "donnees": Path(args.donnees).name, "quality_gate_ok": not echecs,
+                 "donnees": Path(args.donnees).name, "donnees_sha256": artefacts.empreinte(args.donnees),
+                 "git_commit": commit, "code_modifie_non_commite": code_modifie,
+                 "quality_gate_ok": not echecs,
                  "resultats_test": {k: round(float(v), 4) for k, v in resultats.items()}}
-        # Les anciens fichiers de models/ sont remplacés (sauf .gitkeep, qui garde le dossier dans Git)
-        for ancien in DOSSIER_MODELES.glob("*"):
-            if ancien.name == ".gitkeep":
-                continue
-            if ancien.is_dir():
-                shutil.rmtree(ancien)
-            else:
-                ancien.unlink()
-        artefacts.sauvegarder(DOSSIER_MODELES, modele, correction, regle, infos)
-        mlflow.log_artifacts(DOSSIER_MODELES, artifact_path="models")
+        dossier_candidat = Path(args.sortie) / "candidats" / run.info.run_id
+        chemins = artefacts.sauvegarder(dossier_candidat, modele, correction, regle, infos)
+        info_modele = mlflow.pyfunc.log_model(name="modele", **options_modele(chemins),
+                                              registered_model_name=nom_modele if utiliser_registre else None)
+        version = info_modele.registered_model_version   # la version créée par CET enregistrement
 
-        # 7. Registre de modèles : nouvelle version, alias « production » seulement si le quality gate passe
-        if utiliser_registre:
-            mlflow.sklearn.log_model(modele, name="modele", registered_model_name=NOM_MODELE,
-                                     serialization_format="cloudpickle")
-            client = MlflowClient()
-            version = max(int(v.version) for v in client.search_model_versions(f"name='{NOM_MODELE}'"))
-            if echecs:
-                print(f"Quality gate non respecté, version {version} non promue : " + " ; ".join(echecs))
-            else:
-                client.set_registered_model_alias(NOM_MODELE, "production", str(version))
-                print(f"Quality gate respecté : version {version} promue avec l'alias « production »")
+        # 6. Mise en production : seulement si le quality gate passe et si --promouvoir est demandé
+        if echecs:
+            print("Quality gate NON respecté : " + " ; ".join(echecs))
+            print(f"Candidat conservé pour analyse dans {dossier_candidat} ; "
+                  "la production n'est pas modifiée.")
+        elif not args.promouvoir:
+            print(f"Quality gate respecté. Candidat enregistré dans {dossier_candidat}"
+                  + (f" et dans le registre (version {version})" if version else "")
+                  + ", non mis en production (option --promouvoir).")
+        else:
+            # D'abord le dossier de production, ensuite seulement l'alias du registre
+            dossier = publier_en_production(chemins, Path(args.sortie) / "production", run.info.run_id,
+                                            {"run_id": run.info.run_id, "version_registre": version})
+            if utiliser_registre:
+                MlflowClient().set_registered_model_alias(nom_modele, "production", str(version))
+            print(f"Quality gate respecté : version {version} mise en production "
+                  f"(alias « production », dossier {dossier}).")
 
-    print(f"Modèle enregistré dans {DOSSIER_MODELES} (run MLflow {run.info.run_id})")
+    print(f"Run MLflow : {run.info.run_id}")
     if echecs:
-        print("ATTENTION : quality gate non respecté : " + " ; ".join(echecs))
+        sys.exit(1)   # code de sortie non nul : une CI qui appelle ce script s'arrête
 
 
 if __name__ == "__main__":

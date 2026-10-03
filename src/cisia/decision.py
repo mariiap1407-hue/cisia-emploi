@@ -78,14 +78,18 @@ def presenter(probas_usager, risque_usager, seuil_classe_2, seuil_garde_fou):
     """
     classe = appliquer_regle(probas_usager.reshape(1, -1), np.array([risque_usager]),
                              seuil_classe_2, seuil_garde_fou)[0]
-    if classe == 2:
-        niveau = "Élevé"
-    elif seuil_garde_fou is not None and risque_usager >= seuil_garde_fou:
-        niveau = "Modéré"
-    else:
-        niveau = "Faible"
-    return {"Recommandation": RECOMMANDATIONS[classe], "Niveau d'alerte": niveau,
+    return {"Recommandation": RECOMMANDATIONS[classe],
+            "Niveau d'alerte": niveau_alerte(classe, risque_usager, seuil_garde_fou),
             "Risque de longue durée": f"{risque_usager:.0%}"}
+
+
+def niveau_alerte(classe, risque_usager, seuil_garde_fou):
+    """Élevé si la règle oriente en classe 2 ; Modéré si le risque atteint le garde-fou ; Faible sinon."""
+    if classe == 2:
+        return "Élevé"
+    if seuil_garde_fou is not None and risque_usager >= seuil_garde_fou:
+        return "Modéré"
+    return "Faible"
 
 
 def charger_regle(chemin):

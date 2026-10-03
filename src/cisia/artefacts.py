@@ -1,9 +1,11 @@
-"""Sauvegarde et chargement du modèle, de la correction du risque et de la règle de décision.
+"""Sauvegarde et chargement des composants d'un entraînement : modèle, correction du risque, règle.
 
-Les trois éléments sont toujours enregistrés ensemble, dans le même dossier : l'API ne peut pas
-charger un modèle avec la correction ou la règle d'un autre entraînement.
+Les composants sont enregistrés ensemble, avec l'empreinte (SHA-256) de chaque fichier.
+Au chargement, les empreintes sont vérifiées : un composant remplacé par celui d'un autre
+entraînement est détecté.
 """
 
+import hashlib
 import json
 from pathlib import Path
 
@@ -13,29 +15,52 @@ from sklearn.linear_model import LogisticRegression
 
 from cisia.decision import charger_regle
 
-FICHIER_MODELE = "modele.joblib"
-FICHIER_CORRECTION = "recalibration.joblib"
-FICHIER_REGLE = "regle_decision.json"
-FICHIER_INFOS = "infos_entrainement.json"
+FICHIERS = {
+    "modele": "modele.joblib",
+    "correction": "recalibration.joblib",
+    "regle": "regle_decision.json",
+    "infos": "infos_entrainement.json",
+}
+
+
+def empreinte(chemin):
+    """Empreinte SHA-256 d'un fichier : elle change dès qu'un seul octet change."""
+    return hashlib.sha256(Path(chemin).read_bytes()).hexdigest()
 
 
 def sauvegarder(dossier, modele, correction, regle, infos):
+    """Enregistre les composants dans `dossier` et renvoie le chemin de chaque fichier."""
     dossier = Path(dossier)
     dossier.mkdir(parents=True, exist_ok=True)
-    joblib.dump(modele, dossier / FICHIER_MODELE)
-    joblib.dump(correction, dossier / FICHIER_CORRECTION)
-    for nom, contenu in [(FICHIER_REGLE, regle), (FICHIER_INFOS, infos)]:
-        with open(dossier / nom, "w", encoding="utf-8") as fichier:
-            json.dump(contenu, fichier, ensure_ascii=False, indent=2)
+    chemins = {nom: dossier / fichier for nom, fichier in FICHIERS.items()}
+    joblib.dump(modele, chemins["modele"])
+    joblib.dump(correction, chemins["correction"])
+    with open(chemins["regle"], "w", encoding="utf-8") as fichier:
+        json.dump(regle, fichier, ensure_ascii=False, indent=2)
+    empreintes = {nom: empreinte(chemins[nom]) for nom in ["modele", "correction", "regle"]}
+    infos = {**infos, "empreintes": empreintes}
+    with open(chemins["infos"], "w", encoding="utf-8") as fichier:
+        json.dump(infos, fichier, ensure_ascii=False, indent=2)
+    return chemins
 
 
 def charger(dossier):
-    dossier = Path(dossier)
-    regle = charger_regle(dossier / FICHIER_REGLE)   # même vérification que pour config/
-    with open(dossier / FICHIER_INFOS, encoding="utf-8") as fichier:
+    """Charge les composants enregistrés dans `dossier`."""
+    return charger_fichiers({nom: Path(dossier) / fichier for nom, fichier in FICHIERS.items()})
+
+
+def charger_fichiers(chemins):
+    """Charge les composants à partir du chemin de chaque fichier, et vérifie qu'ils vont ensemble."""
+    with open(chemins["infos"], encoding="utf-8") as fichier:
         infos = json.load(fichier)
-    modele = joblib.load(dossier / FICHIER_MODELE)
-    correction = joblib.load(dossier / FICHIER_CORRECTION)
+    for nom in ["modele", "correction", "regle"]:
+        if empreinte(chemins[nom]) != infos["empreintes"][nom]:
+            raise ValueError(f"Le fichier « {nom} » ne correspond pas à l'entraînement enregistré "
+                             f"(empreinte différente) : composants mélangés ou modifiés.")
+
+    regle = charger_regle(chemins["regle"])   # même vérification que pour config/
+    modele = joblib.load(chemins["modele"])
+    correction = joblib.load(chemins["correction"])
 
     # Vérifications : ordre des classes et cohérence entre la méthode déclarée et la correction chargée
     if list(modele.classes_) != [0, 1, 2]:
