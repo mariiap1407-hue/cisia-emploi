@@ -24,5 +24,9 @@ extend-exclude = ["notebooks"]
 # E : style (PEP 8), F : erreurs probables (variables inutilisées...), I : ordre des imports
 select = ["E", "F", "I"]
 
+[tool.ruff.lint.isort]
+# Notre module, pour que ruff le classe à part dans l'ordre des imports
+known-first-party = ["cisia"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]

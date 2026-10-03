@@ -1,0 +1,13 @@
+{
+  "seuil_classe_2": 0.25,
+  "seuil_garde_fou_classe_0": 0.08,
+  "methode_recalibration": "Logistique",
+  "seuils_exprimes_sur": "probabilité de la classe 2 après recalibration",
+  "description": "Classe 2 si risque >= seuil_classe_2 ; sinon la plus probable entre 0 et 1. La classe 0 est remplacée par la classe 1 si risque >= seuil_garde_fou_classe_0. Si seuil_classe_2 vaut null : classe la plus probable parmi les 3 (probabilités brutes). Si seuil_garde_fou_classe_0 vaut null : pas de garde-fou.",
+  "niveaux_alerte": {
+    "eleve": "classe prédite = 2 (accompagnement renforcé)",
+    "modere": "classe prédite 0 ou 1 et risque >= seuil_garde_fou_classe_0 (jamais si pas de garde-fou)",
+    "faible": "tous les autres cas"
+  },
+  "origine": "Notebook CISIA_emploi, sections 6.3 à 6.5 : seuils choisis automatiquement en validation croisée selon les critères de la section 6.1"
+}
