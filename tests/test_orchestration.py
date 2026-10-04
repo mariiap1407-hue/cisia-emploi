@@ -189,3 +189,21 @@ def test_aucun_feedback_utilisable_pas_de_reentrainement(donnees_factices, tmp_p
     resultat = lancer(tmp_path, "--feedbacks", str(chemin_feedbacks))
     assert resultat.returncode == 2 and "Aucun feedback utilisable" in resultat.stdout
     assert not (tmp_path / "models" / "candidats").exists()
+
+
+def test_modele_de_controle_pour_l_image_de_ci(donnees_factices, tmp_path):
+    """CI : le candidat de contrôle est rangé à part (jamais dans « production ») et l'API sait le charger."""
+    assert lancer(tmp_path).returncode == 0
+    candidat = next((tmp_path / "models" / "candidats").iterdir())
+    script = [sys.executable, "scripts/preparer_image_ci.py", str(candidat)]
+    resultat = subprocess.run([*script, "--sortie", str(tmp_path / "ci")], cwd=RACINE,
+                              capture_output=True, encoding="utf-8")
+    assert resultat.returncode == 0, resultat.stdout + resultat.stderr
+    modele = charger_modele_en_service(tmp_path / "ci")
+    reference = charger_donnees(donnees_factices / "reference.csv")
+    usagers = reference.drop(columns=["classe_retour_emploi"]).head(5)
+    assert len(modele.predict(usagers)) == 5
+
+    refus = subprocess.run([*script, "--sortie", str(tmp_path / "production")], cwd=RACINE,
+                           capture_output=True, encoding="utf-8")
+    assert refus.returncode != 0 and not (tmp_path / "production").exists()

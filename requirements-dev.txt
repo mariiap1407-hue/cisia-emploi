@@ -1,10 +1,5 @@
-# Dépendances de développement : production + notebook, tests et qualité du code
--r requirements.txt
-
-# Tests et qualité du code
-pytest==9.1.1
-httpx==0.28.1
-ruff==0.16.9
+# Dépendances de développement : production + tests (requirements-ci.txt) + notebook
+-r requirements-ci.txt
 
 # Notebook (comparaison des modèles, graphiques)
 jupyterlab==4.6.4

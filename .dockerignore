@@ -8,6 +8,7 @@
 !api
 !config
 !models/production
+!models/ci
 
 # Fichiers générés, jamais utiles dans l'image
 **/__pycache__

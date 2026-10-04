@@ -32,7 +32,10 @@ RUN pip install --no-deps . \
     && rm -rf build src/*.egg-info
 COPY api/ api/
 COPY config/ config/
-COPY models/production/ models/production/
+# Modèle copié : models/production (poste local) par défaut ; la CI passe MODELE=models/ci
+# (modèle de CONTRÔLE entraîné sur données factices, pour tester l'image sans données réelles)
+ARG MODELE=models/production
+COPY ${MODELE}/ models/production/
 
 # 3. Utilisateur sans droits d'administration ; seul le dossier du journal est modifiable
 RUN useradd --create-home --uid 1000 cisia \
