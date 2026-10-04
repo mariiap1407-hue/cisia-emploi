@@ -9,6 +9,9 @@
 !config
 !models/production
 !models/ci
+!app
+!.streamlit
+!requirements-ui.txt
 
 # Fichiers générés, jamais utiles dans l'image
 **/__pycache__

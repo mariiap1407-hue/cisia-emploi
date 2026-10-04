@@ -133,8 +133,10 @@ jobs:
             --label "org.opencontainers.image.revision=${{ github.sha }}" \
             -t cisia-api:ci .
 
-      - name: Vérifier que l'image MLflow se construit (construction seulement, non démarrée)
-        run: docker build -t cisia-mlflow:ci docker/mlflow
+      - name: Vérifier que les images MLflow et de l'interface se construisent (construction seulement)
+        run: |
+          docker build -t cisia-mlflow:ci docker/mlflow
+          docker build -f docker/ui/Dockerfile -t cisia-ui:ci .
 
       - name: Tester l'image AVANT publication
         run: |

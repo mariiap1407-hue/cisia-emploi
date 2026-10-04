@@ -46,6 +46,15 @@ CREATE TABLE IF NOT EXISTS reentrainements (
     resultats TEXT,                -- JSON : indicateurs du jeu de test et échecs du quality gate
     message_erreur TEXT            -- diagnostic interne, jamais renvoyé par l'API
 );
+CREATE TABLE IF NOT EXISTS avis_conseillers (
+    id_avis INTEGER PRIMARY KEY AUTOINCREMENT,
+    id_prediction TEXT NOT NULL REFERENCES inferences(id_prediction),
+    date TEXT NOT NULL,
+    avis TEXT NOT NULL,            -- confirme, corrige
+    classe_proposee INTEGER NOT NULL,
+    motif TEXT,
+    precisions TEXT
+);
 CREATE TABLE IF NOT EXISTS feedbacks (
     id_feedback INTEGER PRIMARY KEY AUTOINCREMENT,
     id_prediction TEXT NOT NULL REFERENCES inferences(id_prediction),
@@ -54,7 +63,7 @@ CREATE TABLE IF NOT EXISTS feedbacks (
     commentaire TEXT
 );
 """
-COLONNES_PUBLIQUES = ["id_prediction", "date", "id_session", "statut", "entrees", "sorties",
+COLONNES_PUBLIQUES = ["id_prediction", "date", "id_usager", "id_session", "statut", "entrees", "sorties",
                       "version_modele", "duree_ms", "erreurs_validation"]
 
 
@@ -72,6 +81,8 @@ class Journal:
             colonnes = [ligne["name"] for ligne in connexion.execute("PRAGMA table_info(inferences)")]
             if "erreurs_validation" not in colonnes:
                 connexion.execute("ALTER TABLE inferences ADD COLUMN erreurs_validation TEXT")
+            if "id_usager" not in colonnes:
+                connexion.execute("ALTER TABLE inferences ADD COLUMN id_usager TEXT")
             # Requêtes refusées enregistrées par une version précédente (avant le bloc 5b) avec les
             # valeurs reçues : ces valeurs (et l'ancien diagnostic qui les contenait) sont effacées
             connexion.execute("UPDATE inferences SET entrees = NULL, sorties = NULL, message_erreur = NULL "
@@ -85,31 +96,72 @@ class Journal:
 
     def enregistrer_inference(self, id_prediction, date, id_session, statut, entrees=None, sorties=None,
                               version_modele=None, duree_ms=None, message_erreur=None,
-                              erreurs_validation=None):
+                              erreurs_validation=None, id_usager=None):
         with closing(self._connexion()) as connexion, connexion:
             connexion.execute(
-                "INSERT INTO inferences (id_prediction, date, id_session, statut, entrees, sorties, "
-                "version_modele, duree_ms, message_erreur, erreurs_validation) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (id_prediction, date, id_session, statut, en_json(entrees), en_json(sorties),
+                "INSERT INTO inferences (id_prediction, date, id_usager, id_session, statut, entrees, "
+                "sorties, version_modele, duree_ms, message_erreur, erreurs_validation) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (id_prediction, date, id_usager, id_session, statut, en_json(entrees), en_json(sorties),
                  version_modele, duree_ms, message_erreur, en_json(erreurs_validation)),
             )
 
     def historique(self, limite=50):
-        """Dernières requêtes, au format public (sans le diagnostic interne)."""
+        """Dernières requêtes, au format public (sans le diagnostic interne).
+
+        Chaque prédiction porte aussi le dernier AVIS du conseiller (appréciation à l'entretien) et la
+        dernière SITUATION OBSERVÉE (feedback) : deux informations distinctes, jamais confondues.
+        """
+        colonnes = ", ".join(f"i.{c}" for c in COLONNES_PUBLIQUES)
         with closing(self._connexion()) as connexion:
-            lignes = connexion.execute(
-                f"SELECT {', '.join(COLONNES_PUBLIQUES)} FROM inferences ORDER BY rowid DESC LIMIT ?",
-                (limite,)).fetchall()
+            lignes = connexion.execute(f"""
+                SELECT {colonnes},
+                       a.avis AS avis, a.classe_proposee AS avis_classe, a.motif AS avis_motif,
+                       a.date AS avis_date,
+                       f.classe_reelle AS observee_classe, f.date AS observee_date
+                FROM inferences i
+                LEFT JOIN avis_conseillers a ON a.id_avis = (
+                    SELECT MAX(id_avis) FROM avis_conseillers WHERE id_prediction = i.id_prediction)
+                LEFT JOIN feedbacks f ON f.id_feedback = (
+                    SELECT MAX(id_feedback) FROM feedbacks WHERE id_prediction = i.id_prediction)
+                ORDER BY i.rowid DESC LIMIT ?""", (limite,)).fetchall()
         historique = []
         for ligne in lignes:
-            element = dict(ligne)
+            element = {colonne: ligne[colonne] for colonne in COLONNES_PUBLIQUES}
             if element["statut"] == "invalide":   # sécurité : jamais de valeur d'une requête refusée
                 element["entrees"] = element["sorties"] = None
             for champ in ["entrees", "sorties", "erreurs_validation"]:
                 element[champ] = json.loads(element[champ]) if element[champ] else None
+            element["avis_conseiller"] = None if ligne["avis"] is None else {
+                "avis": ligne["avis"], "classe_proposee": ligne["avis_classe"],
+                "motif": ligne["avis_motif"], "date": ligne["avis_date"]}
+            element["situation_observee"] = None if ligne["observee_classe"] is None else {
+                "classe_reelle": ligne["observee_classe"], "date": ligne["observee_date"]}
             historique.append(element)
         return historique
+
+    def enregistrer_avis(self, id_prediction, date, avis, classe_proposee, motif=None, precisions=None):
+        """Appréciation du conseiller à l'entretien ; renvoie son identifiant et s'il en remplace un.
+
+        Conservée pour le suivi (accord conseiller / modèle), JAMAIS utilisée pour réentraîner :
+        le réentraînement n'utilise que la situation observée (feedbacks).
+        """
+        with closing(self._connexion()) as connexion, connexion:
+            deja = connexion.execute("SELECT COUNT(*) FROM avis_conseillers WHERE id_prediction = ?",
+                                     (id_prediction,)).fetchone()[0]
+            curseur = connexion.execute(
+                "INSERT INTO avis_conseillers (id_prediction, date, avis, classe_proposee, motif, "
+                "precisions) VALUES (?, ?, ?, ?, ?, ?)",
+                (id_prediction, date, avis, classe_proposee, motif, precisions))
+            return curseur.lastrowid, deja > 0
+
+    def classe_predite(self, id_prediction):
+        """Classe renvoyée par le modèle pour une prédiction acceptée (None si inconnue)."""
+        with closing(self._connexion()) as connexion:
+            ligne = connexion.execute(
+                "SELECT sorties FROM inferences WHERE id_prediction = ? AND statut = 'ok'",
+                (id_prediction,)).fetchone()
+        return json.loads(ligne["sorties"])["classe"] if ligne and ligne["sorties"] else None
 
     def prediction_existe(self, id_prediction):
         with closing(self._connexion()) as connexion:

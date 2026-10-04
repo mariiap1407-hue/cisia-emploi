@@ -26,7 +26,9 @@ select = ["E", "F", "I"]
 
 [tool.ruff.lint.isort]
 # Nos modules (code partagé et API), pour que ruff les classe à part dans l'ordre des imports
-known-first-party = ["cisia", "api"]
+known-first-party = ["cisia", "api", "app"]
+# Modules de l'interface importés directement par app/interface.py (lancée avec « streamlit run »)
+known-local-folder = ["client", "presentation"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -1,0 +1,5 @@
+# Dépendances de l'interface Streamlit (app/), image Docker dédiée « cisia-ui »
+# streamlit et tzdata : versions à figer sur celles de l'environnement « exam » (pip show streamlit tzdata)
+streamlit
+tzdata
+python-dotenv==1.2.3

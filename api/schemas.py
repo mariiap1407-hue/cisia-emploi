@@ -22,12 +22,16 @@ chemin du champ sans le préfixe technique « body » (ex. ["usager", "age"]).
 from typing import Annotated, Literal
 
 import pandas as pd
-from pydantic import BaseModel, ConfigDict, Field, StringConstraints
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
 
 Diplome = Literal["Sans diplôme", "Bac", "Bac+2", "Bac+5"]
 # Espaces retirés avant la vérification : une synthèse faite seulement d'espaces est refusée
 Synthese = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=5000)]
 CodeRome = Annotated[str, StringConstraints(strip_whitespace=True, pattern=r"^[A-Za-z]\d{4}$")]
+IdUsager = Annotated[str, StringConstraints(strip_whitespace=True, pattern=r"^[A-Za-z0-9_-]{1,32}$")]
+MotifCorrection = Literal["Informations complémentaires issues de l'entretien",
+                          "Situation personnelle non prise en compte", "Projet professionnel en évolution",
+                          "Autre"]
 
 
 class Usager(BaseModel):
@@ -45,7 +49,32 @@ class DemandePrediction(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     usager: Usager
+    id_usager: IdUsager | None = Field(None, description="Identifiant PSEUDONYME du dossier (ex. DE-0248), "
+                                                         "jamais un nom : lettres, chiffres, tiret")
     id_session: str | None = Field(None, max_length=64, description="Identifiant de la session du conseiller")
+
+
+class Facteur(BaseModel):
+    facteur: str = Field(description="Information saisie (âge, diplôme, ancienneté, métier, synthèse)")
+    contribution: float = Field(description="Contribution SHAP au score de la classe retenue (log-odds) : "
+                                            "positive = rapproche de cette classe, négative = en éloigne")
+
+
+class Mot(BaseModel):
+    mot: str
+    contribution: float
+
+
+class Explication(BaseModel):
+    """Pourquoi cette classe ? Contributions SHAP exactes (TreeSHAP, calculées par LightGBM).
+
+    Valeur de base + somme des contributions des facteurs = score brut du modèle pour la classe retenue.
+    Décrit le fonctionnement du modèle, pas une cause dans la situation de l'usager.
+    """
+    classe_expliquee: int
+    valeur_de_base: float
+    facteurs: list[Facteur]
+    mots: list[Mot] = Field(description="Mots de la synthèse qui ont le plus pesé")
 
 
 class Prediction(BaseModel):
@@ -56,6 +85,8 @@ class Prediction(BaseModel):
     risque_longue_duree: float = Field(description="Probabilité recalibrée de la classe 2 (entre 0 et 1)")
     risque_affiche: str = Field(description="Risque arrondi, tel qu'affiché au conseiller")
     version_modele: str
+    explication: Explication | None = Field(
+        None, description="Explication de la classe retenue (absente pour un modèle d'avant l'ajout de SHAP)")
 
 
 class Feedback(BaseModel):
@@ -72,10 +103,34 @@ class Feedback(BaseModel):
     commentaire: str | None = Field(None, max_length=1000)
 
 
+class AvisConseiller(BaseModel):
+    """Appréciation du conseiller AU MOMENT de l'entretien (« confirmer » ou « proposer une correction »).
+
+    Distincte du feedback : l'avis sert au suivi de l'accord entre conseillers et modèle, il n'est
+    JAMAIS utilisé pour réentraîner (le modèle apprendrait l'opinion, pas la réalité). Le
+    réentraînement n'utilise que la situation OBSERVÉE (route /feedback), connue des mois plus tard.
+    Un nouvel avis sur la même prédiction remplace le précédent ; les anciens restent tracés.
+    """
+    model_config = ConfigDict(extra="forbid")
+
+    id_prediction: str = Field(min_length=1, max_length=64)
+    avis: Literal["confirme", "corrige"]
+    classe_proposee: Literal[0, 1, 2] | None = Field(None, description="Obligatoire pour une correction")
+    motif: MotifCorrection | None = Field(None, description="Obligatoire pour une correction")
+    precisions: Annotated[str, StringConstraints(strip_whitespace=True, max_length=1000)] | None = None
+
+    @model_validator(mode="after")
+    def correction_complete(self):
+        if self.avis == "corrige" and (self.classe_proposee is None or self.motif is None):
+            raise ValueError("Une correction exige la classe proposée et le motif.")
+        return self
+
+
 class ElementHistorique(BaseModel):
     """Ce que l'historique montre : pas de détail technique interne, pas de valeur d'une requête refusée."""
     id_prediction: str
     date: str
+    id_usager: str | None = None
     id_session: str | None
     statut: str
     entrees: dict | None
@@ -83,6 +138,8 @@ class ElementHistorique(BaseModel):
     version_modele: str | None
     duree_ms: float | None
     erreurs_validation: list | None
+    avis_conseiller: dict | None = Field(None, description="Dernier avis du conseiller à l'entretien")
+    situation_observee: dict | None = Field(None, description="Dernière situation observée (feedback)")
 
 
 def vers_tableau(usager: Usager) -> pd.DataFrame:
@@ -161,9 +218,12 @@ MESSAGES = {
     "bool_parsing": "Valeur attendue : true ou false.",
     "bool_type": "Valeur attendue : true ou false.",
     "json_invalid": "JSON mal formé.",
+    "value_error": "{error}",
     "model_attributes_type": "Objet JSON attendu.",
     "dict_type": "Objet JSON attendu.",
 }
+MESSAGE_ID_USAGER = ("Identifiant pseudonyme attendu (ex. DE-0248) : lettres, chiffres, tiret, "
+                     "32 caractères au plus, jamais de nom.")
 MESSAGE_CODE_ROME = "Format invalide : une lettre suivie de 4 chiffres attendue (ex. M1607)."
 PREFIXES_TECHNIQUES = {"body", "query", "header", "path"}
 
@@ -179,6 +239,8 @@ def message_francais(erreur, champ):
     type_erreur = erreur.get("type", "")
     if type_erreur == "string_pattern_mismatch" and champ and champ[-1] == "code_rome_vise":
         return MESSAGE_CODE_ROME
+    if type_erreur == "string_pattern_mismatch" and champ and champ[-1] == "id_usager":
+        return MESSAGE_ID_USAGER
     modele = MESSAGES.get(type_erreur)
     if modele is None:
         return str(erreur.get("msg", ""))

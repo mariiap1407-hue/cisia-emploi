@@ -46,6 +46,7 @@ from api.reentrainement import (
     retablir_alias,
 )
 from api.schemas import (
+    AvisConseiller,
     DemandePrediction,
     ElementHistorique,
     Erreur,
@@ -161,13 +162,14 @@ def creer_application(dossier_production=None, chemin_base=None, cle_api=None, d
                       responses={**ERREUR_401, **ERREUR_422, **ERREUR_503,
                                  500: {"model": Erreur, "description": "Erreur interne (journalisée)"}})
     def predire(demande: DemandePrediction):
-        """Recommandation, niveau d'alerte et risque de chômage de longue durée pour un usager."""
+        """Recommandation, niveau d'alerte, risque de chômage de longue durée et explication (SHAP)."""
         id_prediction = str(uuid.uuid4())
         entrees = demande.usager.model_dump()
         service = application.state.service   # lu UNE fois : modèle et version restent cohérents
         if service is None:
             journal.enregistrer_inference(id_prediction, maintenant(), demande.id_session, "indisponible",
-                                          entrees=entrees, message_erreur="aucun modèle en production")
+                                          entrees=entrees, message_erreur="aucun modèle en production",
+                                          id_usager=demande.id_usager)
             raise HTTPException(status_code=503, detail="Aucun modèle en production.")
 
         debut = time.perf_counter()
@@ -188,10 +190,12 @@ def creer_application(dossier_production=None, chemin_base=None, cle_api=None, d
             risque_longue_duree=round(float(sortie["risque_longue_duree"]), 4),
             risque_affiche=f"{float(sortie['risque_longue_duree']):.0%}",
             version_modele=version_de(service),
+            explication=sortie.get("explication"),   # absente si le modèle date d'avant l'ajout de SHAP
         )
         journal.enregistrer_inference(id_prediction, maintenant(), demande.id_session, "ok",
                                       entrees=entrees, sorties=reponse.model_dump(),
-                                      version_modele=reponse.version_modele, duree_ms=round(duree_ms, 2))
+                                      version_modele=reponse.version_modele, duree_ms=round(duree_ms, 2),
+                                      id_usager=demande.id_usager)
         return reponse
 
     @application.get("/history", response_model=list[ElementHistorique],
@@ -212,6 +216,24 @@ def creer_application(dossier_production=None, chemin_base=None, cle_api=None, d
                                                              retour.classe_reelle, retour.commentaire)
         return {"id_feedback": id_feedback, "id_prediction": retour.id_prediction,
                 "remplace_un_feedback_precedent": remplace}
+
+    @application.post("/avis", status_code=201, dependencies=[Depends(verifier_cle)],
+                      responses={**ERREUR_401, **ERREUR_422, **ERREUR_503,
+                                 404: {"model": Erreur, "description": "Prédiction inconnue"}})
+    def avis(retour: AvisConseiller):
+        """Appréciation du conseiller à l'entretien : « confirme » ou « corrige » (classe et motif).
+
+        Conservée pour le suivi de l'accord conseiller / modèle, JAMAIS utilisée pour réentraîner :
+        seule la situation observée (/feedback) sert au réentraînement.
+        """
+        classe_predite = journal.classe_predite(retour.id_prediction)
+        if classe_predite is None:
+            raise HTTPException(status_code=404, detail="Prédiction inconnue.")
+        classe = classe_predite if retour.avis == "confirme" else retour.classe_proposee
+        id_avis, remplace = journal.enregistrer_avis(retour.id_prediction, maintenant(), retour.avis, classe,
+                                                     retour.motif, retour.precisions)
+        return {"id_avis": id_avis, "id_prediction": retour.id_prediction, "classe_proposee": classe,
+                "remplace_un_avis_precedent": remplace}
 
     @application.post("/retrain", response_model=ResultatReentrainement, dependencies=[Depends(verifier_cle)],
                       responses={**ERREUR_401, **ERREUR_422, **ERREUR_503,

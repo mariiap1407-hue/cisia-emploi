@@ -1,0 +1,165 @@
+{
+  "_avertissement": "Référentiel FICTIF pour la démonstration : aucune personne réelle. En production, ces informations viendraient du référentiel national des usagers.",
+  "dossiers": [
+    {
+      "id_usager": "DE-0001",
+      "date_naissance": "1982-03-13",
+      "niveau_diplome": null,
+      "anciennete_poste_ans": 4.5,
+      "date_inscription": "2026-09-04",
+      "date_reprise_emploi": null
+    },
+    {
+      "id_usager": "DE-0002",
+      "date_naissance": "1965-09-07",
+      "niveau_diplome": "Bac",
+      "anciennete_poste_ans": 0.5,
+      "date_inscription": "2026-09-04",
+      "date_reprise_emploi": null
+    },
+    {
+      "id_usager": "DE-0003",
+      "date_naissance": "1967-09-14",
+      "niveau_diplome": "Bac",
+      "anciennete_poste_ans": 0.5,
+      "date_inscription": "2026-09-04",
+      "date_reprise_emploi": null
+    },
+    {
+      "id_usager": "DE-0004",
+      "date_naissance": "2002-11-19",
+      "niveau_diplome": "Sans diplôme",
+      "anciennete_poste_ans": 6,
+      "date_inscription": "2026-09-04",
+      "date_reprise_emploi": null
+    },
+    {
+      "id_usager": "DE-0005",
+      "date_naissance": "1976-01-18",
+      "niveau_diplome": "Sans diplôme",
+      "anciennete_poste_ans": 10,
+      "date_inscription": "2026-05-07",
+      "date_reprise_emploi": null
+    },
+    {
+      "id_usager": "DE-0006",
+      "date_naissance": "1998-05-18",
+      "niveau_diplome": "Sans diplôme",
+      "anciennete_poste_ans": 4.5,
+      "date_inscription": "2026-05-07",
+      "date_reprise_emploi": null
+    },
+    {
+      "id_usager": "DE-0007",
+      "date_naissance": "1997-12-03",
+      "niveau_diplome": null,
+      "anciennete_poste_ans": 8,
+      "date_inscription": "2026-09-04",
+      "date_reprise_emploi": null
+    },
+    {
+      "id_usager": "DE-0008",
+      "date_naissance": "1989-06-15",
+      "niveau_diplome": "Bac",
+      "anciennete_poste_ans": 1,
+      "date_inscription": "2025-03-23",
+      "date_reprise_emploi": "2025-10-29"
+    },
+    {
+      "id_usager": "DE-0009",
+      "date_naissance": "1967-10-10",
+      "niveau_diplome": "Bac+5",
+      "anciennete_poste_ans": null,
+      "date_inscription": "2025-01-22",
+      "date_reprise_emploi": "2026-01-07"
+    },
+    {
+      "id_usager": "DE-0010",
+      "date_naissance": "1980-10-03",
+      "niveau_diplome": "Bac",
+      "anciennete_poste_ans": 4.5,
+      "date_inscription": "2026-07-06",
+      "date_reprise_emploi": null
+    },
+    {
+      "id_usager": "DE-0011",
+      "date_naissance": "1993-07-02",
+      "niveau_diplome": "Bac+2",
+      "anciennete_poste_ans": 12,
+      "date_inscription": "2026-07-06",
+      "date_reprise_emploi": null
+    },
+    {
+      "id_usager": "DE-0012",
+      "date_naissance": "1983-12-12",
+      "niveau_diplome": "Sans diplôme",
+      "anciennete_poste_ans": 8,
+      "date_inscription": "2025-03-23",
+      "date_reprise_emploi": null
+    },
+    {
+      "id_usager": "DE-0013",
+      "date_naissance": "1967-05-16",
+      "niveau_diplome": null,
+      "anciennete_poste_ans": 15,
+      "date_inscription": "2026-07-06",
+      "date_reprise_emploi": null
+    },
+    {
+      "id_usager": "DE-0014",
+      "date_naissance": "2005-08-10",
+      "niveau_diplome": "Sans diplôme",
+      "anciennete_poste_ans": 4.5,
+      "date_inscription": "2025-06-11",
+      "date_reprise_emploi": null
+    },
+    {
+      "id_usager": "DE-0015",
+      "date_naissance": "1991-06-06",
+      "niveau_diplome": "Bac",
+      "anciennete_poste_ans": 3,
+      "date_inscription": "2026-07-06",
+      "date_reprise_emploi": null
+    },
+    {
+      "id_usager": "DE-0016",
+      "date_naissance": "1977-07-13",
+      "niveau_diplome": null,
+      "anciennete_poste_ans": 6,
+      "date_inscription": "2025-03-23",
+      "date_reprise_emploi": "2026-08-05"
+    },
+    {
+      "id_usager": "DE-0017",
+      "date_naissance": "1979-03-27",
+      "niveau_diplome": "Bac+5",
+      "anciennete_poste_ans": 3,
+      "date_inscription": "2025-06-11",
+      "date_reprise_emploi": null
+    },
+    {
+      "id_usager": "DE-0018",
+      "date_naissance": "1984-11-13",
+      "niveau_diplome": "Bac",
+      "anciennete_poste_ans": 1,
+      "date_inscription": "2026-01-27",
+      "date_reprise_emploi": "2026-07-16"
+    },
+    {
+      "id_usager": "DE-0019",
+      "date_naissance": "2004-04-01",
+      "niveau_diplome": "Bac+2",
+      "anciennete_poste_ans": 1,
+      "date_inscription": "2025-03-23",
+      "date_reprise_emploi": null
+    },
+    {
+      "id_usager": "DE-0020",
+      "date_naissance": "1980-01-05",
+      "niveau_diplome": null,
+      "anciennete_poste_ans": 1,
+      "date_inscription": "2025-06-11",
+      "date_reprise_emploi": "2026-05-27"
+    }
+  ]
+}

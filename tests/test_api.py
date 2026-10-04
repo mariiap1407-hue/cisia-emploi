@@ -66,11 +66,20 @@ def test_prediction(client):
     assert 0 <= resultat["risque_longue_duree"] <= 1
     assert resultat["niveau_alerte"] in ("Faible", "Modéré", "Élevé")
     assert (resultat["classe"] == 2) == (resultat["niveau_alerte"] == "Élevé")
+    # Explication SHAP de la classe retenue, conservée aussi dans l'historique
+    explication = resultat["explication"]
+    assert explication["classe_expliquee"] == resultat["classe"]
+    assert len(explication["facteurs"]) == 5
+    sorties = client.get("/history", headers=ENTETE).json()[0]["sorties"]
+    assert sorties["explication"] == explication
 
 
 def test_prediction_avec_informations_manquantes(client):
     usager = {"code_rome_vise": "K2204", "synthese_entretien": "Recherche en cours."}
-    assert predire(client, usager).status_code == 200
+    reponse = predire(client, usager)
+    assert reponse.status_code == 200
+    facteurs = [f["facteur"] for f in reponse.json()["explication"]["facteurs"]]
+    assert "Âge (non renseigné)" in facteurs and "Niveau de diplôme (non renseigné)" in facteurs
 
 
 def test_cle_avec_accents_refusee_proprement(client):
@@ -135,6 +144,40 @@ def test_sans_modele_en_production(tmp_path):
     with TestClient(creer_application(tmp_path / "vide", tmp_path / "journal.db", cle_api=CLE)) as client:
         assert client.get("/health").status_code == 503   # pas prête : aucun modèle chargé
         assert predire(client).status_code == 503
+
+
+def test_identifiant_usager_pseudonyme(client):
+    corps = {"usager": USAGER, "id_usager": "DE-0248"}
+    id_prediction = client.post("/predict", json=corps, headers=ENTETE).json()["id_prediction"]
+    dernier = client.get("/history?limite=1", headers=ENTETE).json()[0]
+    assert dernier["id_prediction"] == id_prediction and dernier["id_usager"] == "DE-0248"
+    # Un nom (espace, accents) n'est pas un identifiant pseudonyme : refusé
+    refus = client.post("/predict", json={"usager": USAGER, "id_usager": "Jean Dupont"}, headers=ENTETE)
+    assert refus.status_code == 422 and refus.json()["detail"][0]["champ"] == ["id_usager"]
+
+
+def test_avis_du_conseiller_distinct_du_feedback(client):
+    reponse = predire(client)
+    id_prediction, classe = reponse.json()["id_prediction"], reponse.json()["classe"]
+
+    def envoyer(corps):
+        return client.post("/avis", json={"id_prediction": id_prediction, **corps}, headers=ENTETE)
+
+    confirme = envoyer({"avis": "confirme"})
+    assert confirme.status_code == 201 and confirme.json()["classe_proposee"] == classe
+    assert envoyer({"avis": "corrige", "classe_proposee": 1}).status_code == 422   # motif manquant
+    corrige = envoyer({"avis": "corrige", "classe_proposee": 1, "motif": "Autre", "precisions": "Formation"})
+    assert corrige.status_code == 201 and corrige.json()["remplace_un_avis_precedent"] is True
+    inconnue = client.post("/avis", json={"id_prediction": "inconnue", "avis": "confirme"}, headers=ENTETE)
+    assert inconnue.status_code == 404
+
+    element = client.get("/history?limite=1", headers=ENTETE).json()[0]
+    avis_enregistre = element["avis_conseiller"]
+    assert avis_enregistre["avis"] == "corrige" and avis_enregistre["classe_proposee"] == 1
+    assert element["situation_observee"] is None   # l'avis n'est PAS une situation observée
+    client.post("/feedback", json={"id_prediction": id_prediction, "classe_reelle": 2}, headers=ENTETE)
+    element = client.get("/history?limite=1", headers=ENTETE).json()[0]
+    assert element["situation_observee"]["classe_reelle"] == 2
 
 
 # --- Réentraînement (/retrain) ---------------------------------------------------------------

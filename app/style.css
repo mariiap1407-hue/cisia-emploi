@@ -1,0 +1,86 @@
+/* PHARE · apparence sobre et compacte (titres noirs, encadrés d'information bleu clair) */
+:root {
+  --bleu: #000091; --bleu-clair: #e8edff; --texte: #161616; --gris: #666666; --bordure: #dddddd;
+  --fond-gris: #f6f6f6; --ambre: #f2a900; --ambre-fond: #fef6e7; --ambre-badge: #fde3a7; --ambre-texte: #6b4b00;
+  --vert-fond: #e3f6ea; --vert-texte: #18753c; --bleu-badge: #e3e9fb; --gris-badge: #eef0f4;
+}
+html, body, [class*="css"] { font-family: -apple-system, "Segoe UI", system-ui, Roboto, Arial, sans-serif; }
+#MainMenu, footer, header[data-testid="stHeader"] { visibility: hidden; height: 0; }
+.block-container { max-width: 1080px; padding-top: 0.6rem; padding-bottom: 4rem; }
+h1, h2, h3 { color: var(--texte) !important; letter-spacing: -0.01em; }
+
+/* En-tête et navigation */
+.st-key-entete { border-bottom: 1px solid var(--bordure); padding-bottom: 0.3rem; margin-bottom: 0.4rem; }
+.st-key-entete button { background: none !important; border: none !important; box-shadow: none !important;
+  color: var(--texte) !important; font-size: 1rem; padding: 0.4rem 0.2rem; border-radius: 0; }
+.st-key-entete button:hover { color: var(--bleu) !important; }
+[class*="st-key-nav_"][class*="_actif"] button { color: var(--bleu) !important; font-weight: 700;
+  border-bottom: 3px solid var(--bleu) !important; }
+.espace { text-align: right; color: var(--texte); padding-top: 0.55rem; }
+
+/* Éléments de page */
+.fil { color: var(--gris); font-size: 0.9rem; margin: 0.2rem 0 0.6rem; }
+.fil b { color: var(--bleu); font-weight: 500; }
+.prototype { display: inline-block; background: var(--gris-badge); color: var(--gris); font-size: 0.8rem;
+  padding: 0.15rem 0.6rem; border-radius: 4px; margin-bottom: 0.3rem; }
+.sous-titre { color: var(--texte); font-size: 1.1rem; margin: -0.6rem 0 1rem; }
+.info { background: var(--bleu-clair); color: var(--bleu); border-radius: 4px; padding: 0.9rem 1rem;
+  display: flex; gap: 0.8rem; align-items: center; margin: 0.6rem 0 1rem; }
+.info .i { border: 2px solid var(--bleu); border-radius: 50%; width: 1.5rem; height: 1.5rem; min-width: 1.5rem;
+  display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 0.9rem; }
+.aide-saisie { color: var(--gris); font-size: 0.85rem; margin-top: -0.6rem; }
+
+/* Carte de résultat */
+.carte { border-left: 6px solid var(--bleu); background: var(--fond-gris); border-radius: 4px;
+  padding: 1.1rem 1.4rem; margin: 0.6rem 0 0.4rem; }
+.carte.ambre { border-left-color: var(--ambre); background: var(--ambre-fond); }
+.carte.vert { border-left-color: var(--vert-texte); background: #f1faf4; }
+.carte .etiquette { color: var(--texte); font-size: 0.95rem; }
+.carte .titre { font-size: 2rem; font-weight: 800; color: var(--texte); margin: 0.1rem 0; }
+.carte .phrase { font-size: 1.05rem; color: var(--texte); }
+.carte .details { color: var(--gris); font-size: 0.9rem; margin-top: 0.5rem; }
+.badge { display: inline-block; border-radius: 4px; padding: 0.15rem 0.55rem; font-size: 0.85rem;
+  font-weight: 600; vertical-align: middle; white-space: nowrap; }
+.carte .badge { font-size: 1rem; margin-left: 0.6rem; }
+.badge.ambre { background: var(--ambre-badge); color: var(--ambre-texte); }
+.badge.vert { background: var(--vert-fond); color: var(--vert-texte); }
+.badge.bleu { background: var(--bleu-badge); color: var(--bleu); }
+.badge.gris { background: var(--gris-badge); color: var(--texte); }
+/* Explication (SHAP) : barres divergentes autour d'un axe central */
+.shap { margin: 0.2rem 0 0.4rem; }
+.shap-ligne { display: grid; grid-template-columns: 17rem 1fr 1fr; align-items: center; min-height: 1.7rem; }
+.shap-nom { color: var(--texte); font-size: 0.95rem; }
+.shap-gauche { display: flex; justify-content: flex-end; border-right: 2px solid var(--texte); height: 1.7rem;
+  align-items: center; }
+.shap-droite { display: flex; justify-content: flex-start; height: 1.7rem; align-items: center; }
+.shap-legende span { color: var(--gris); font-size: 0.8rem; border-right: none; padding: 0 0.5rem; }
+.barre { display: inline-block; height: 0.85rem; border-radius: 2px; }
+.barre.pour { background: var(--bleu); }
+.barre.contre { background: #9aa3b5; }
+.shap-mots { color: var(--texte); font-size: 0.95rem; margin: 0.6rem 0 0.2rem; }
+.shap-note { color: var(--gris); font-size: 0.85rem; margin: 0.3rem 0 0.8rem; }
+.analysees { display: flex; flex-wrap: wrap; gap: 0.4rem 1.6rem; color: var(--texte); padding: 0.4rem 0 0.8rem; }
+.analysees span + span { border-left: 1px solid var(--bordure); padding-left: 1.6rem; }
+.question { text-align: center; color: var(--bleu); font-weight: 700; font-size: 1.25rem; margin: 1.2rem 0 0.4rem; }
+.discret { text-align: center; color: var(--gris); font-size: 0.85rem; }
+
+/* Historique */
+.ligne-titre { font-weight: 700; color: var(--texte); background: var(--fond-gris); padding: 0.6rem 0.4rem;
+  border-radius: 4px; }
+.cellule { padding: 0.45rem 0.4rem; color: var(--texte); }
+hr.fin { border: none; border-top: 1px solid var(--bordure); margin: 0.1rem 0; }
+
+/* Boutons : principal bleu, secondaire encadré */
+.stButton button[kind="primary"], .stFormSubmitButton button[kind="primaryFormSubmit"] {
+  background: var(--bleu) !important; border-color: var(--bleu) !important; border-radius: 4px; }
+.stButton button[kind="secondary"], .stFormSubmitButton button[kind="secondaryFormSubmit"] {
+  border-radius: 4px; border-color: var(--bordure); color: var(--texte); }
+.st-key-lien button, [class*="st-key-lien_"] button { background: none !important; border: none !important;
+  color: var(--bleu) !important; padding: 0 !important; box-shadow: none !important; }
+
+/* Pied de page et écran d'accueil */
+.pied { position: fixed; left: 0; right: 0; bottom: 0; background: #f2f4f8; padding: 0.55rem 2.5rem;
+  display: flex; justify-content: space-between; font-size: 0.85rem; color: var(--gris); z-index: 100; }
+.pied b { color: var(--bleu); }
+.intro { display: flex; justify-content: center; align-items: center; min-height: 75vh; }
+.intro img { max-width: 600px; width: 90%; }

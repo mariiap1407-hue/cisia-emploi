@@ -12,7 +12,7 @@
 #            entraînement : MLFLOW_TRACKING_URI=http://localhost:5000
 # Ports ouverts sur ce poste seulement (127.0.0.1) : MLflow n'a pas d'authentification.
 # La clé d'API est lue dans .env (jamais versionné, jamais copié dans l'image).
-# L'interface Streamlit sera ajoutée ici au bloc 9.
+# - ui     : http://127.0.0.1:8501 — interface conseiller PHARE (Streamlit) ; elle appelle l'API.
 
 services:
   api:
@@ -28,6 +28,20 @@ services:
       - journal:/app/outputs
     restart: unless-stopped
     # Contrôle de santé : défini dans le Dockerfile (/health = modèle chargé ET clé configurée)
+
+  ui:
+    build:
+      context: .
+      dockerfile: docker/ui/Dockerfile
+    image: cisia-ui:local
+    container_name: cisia-ui
+    ports:
+      - "127.0.0.1:8501:8501"
+    env_file:
+      - .env                      # clé d'API, lue côté serveur : jamais envoyée au navigateur
+    environment:
+      CISIA_API_URL: http://api:8000
+    restart: unless-stopped
 
   mlflow:
     build: ./docker/mlflow

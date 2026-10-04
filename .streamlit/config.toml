@@ -1,0 +1,14 @@
+# Thème de l'interface PHARE (couleurs du logo, titres noirs, fond blanc)
+[theme]
+base = "light"
+primaryColor = "#000091"
+backgroundColor = "#ffffff"
+secondaryBackgroundColor = "#f6f6f6"
+textColor = "#161616"
+font = "sans serif"
+
+[client]
+toolbarMode = "minimal"
+
+[browser]
+gatherUsageStats = false

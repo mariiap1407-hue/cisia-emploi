@@ -1,5 +1,6 @@
 # Dépendances de développement : production + tests (requirements-ci.txt) + notebook
 -r requirements-ci.txt
+-r requirements-ui.txt
 
 # Notebook (comparaison des modèles, graphiques)
 jupyterlab==4.6.4

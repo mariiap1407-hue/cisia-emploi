@@ -77,6 +77,8 @@ def test_predire_usagers_depuis_donnees_brutes(donnees_factices, tmp_path):
     reference = charger_donnees(donnees_factices / "reference.csv")
     bruts = reference.drop(columns=["classe_retour_emploi"]).head(20)
     sortie = predire_usagers(composants, bruts)
-    assert list(sortie.columns) == ["classe", "recommandation", "niveau_alerte", "risque_longue_duree"]
+    assert list(sortie.columns) == ["classe", "recommandation", "niveau_alerte", "risque_longue_duree",
+                                    "explication"]
     assert len(sortie) == 20
+    assert (sortie["explication"].map(lambda e: e["classe_expliquee"]) == sortie["classe"]).all()
     assert sortie.loc[sortie["classe"] == 2, "niveau_alerte"].eq("Élevé").all()
