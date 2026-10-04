@@ -8,7 +8,7 @@ import pytest
 from cisia import artefacts
 from cisia.decision import charger_regle
 from cisia.entrainement import entrainer, evaluer, predire
-from cisia.evaluation import taux_erreurs_critiques, verifier_seuils_qualite
+from cisia.evaluation import comparer_au_modele_en_production, taux_erreurs_critiques, verifier_seuils_qualite
 from cisia.inference import predire_usagers
 from cisia.preparation import charger_donnees, decouper, nettoyer, separer_x_y
 
@@ -82,3 +82,17 @@ def test_predire_usagers_depuis_donnees_brutes(donnees_factices, tmp_path):
     assert len(sortie) == 20
     assert (sortie["explication"].map(lambda e: e["classe_expliquee"]) == sortie["classe"]).all()
     assert sortie.loc[sortie["classe"] == 2, "niveau_alerte"].eq("Élevé").all()
+
+
+def test_champion_challenger_par_ordre_de_priorite():
+    production = {"Nb erreurs critiques": 4, "Rappel classe 2": 0.656, "F1 macro": 0.670}
+
+    def comparer(**candidat):
+        return comparer_au_modele_en_production({**production, **candidat}, production)
+
+    assert comparer(**{"Nb erreurs critiques": 3, "F1 macro": 0.60})["meilleur"]      # priorité 1
+    assert not comparer(**{"Nb erreurs critiques": 5, "F1 macro": 0.80})["meilleur"]  # F1 ne rattrape pas
+    assert comparer(**{"Rappel classe 2": 0.70, "F1 macro": 0.60})["meilleur"]        # égalité, puis rappel
+    assert comparer(**{"F1 macro": 0.68})["meilleur"]                                  # égalité, puis F1
+    egal = comparer()
+    assert not egal["meilleur"] and "conservé" in egal["motif"]   # à égalité, le modèle en place reste

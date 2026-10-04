@@ -38,6 +38,7 @@ CREATE TABLE IF NOT EXISTS reentrainements (
     date_debut TEXT NOT NULL,
     date_fin TEXT,
     statut TEXT NOT NULL,          -- mis_en_production, candidat_non_promu, refuse_quality_gate,
+                                   -- non_promu_pas_meilleur (moins bon que le modèle en production),
                                    -- erreur, erreur_activation, aucun_feedback_utilisable
     n_feedbacks INTEGER,
     run_id TEXT,

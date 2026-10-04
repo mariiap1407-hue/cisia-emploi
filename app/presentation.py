@@ -10,6 +10,8 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+import pandas as pd
+
 FUSEAU = ZoneInfo("Europe/Paris")
 
 # Classe prédite : titre, délai, libellé court (badges), ton de couleur
@@ -278,3 +280,56 @@ def filtrer(historique, identifiant="", periode="Tout", classe=None, statut="Tou
                 continue
         resultat.append(element)
     return resultat
+
+
+# --- Page « Suivi du modèle » (rapport produit par scripts/suivi.py, servi par l'API sur /suivi) --------
+
+NOMS_VARIABLES = {"age": "Âge", "anciennete_poste_ans": "Ancienneté",
+                  "longueur_synthese": "Longueur de la synthèse", "niveau_diplome": "Niveau de diplôme",
+                  "domaine_rome": "Domaine métier", "classes_predites": "Classes prédites"}
+
+
+def alertes_triees(rapport):
+    """Alertes du rapport, les critiques d'abord."""
+    return sorted(rapport.get("alertes", []), key=lambda a: a["niveau"] != "critique")
+
+
+def semaines_en_derive(lignes):
+    """Nombre de variables en dérive par semaine, au niveau global (graphique du tableau de bord)."""
+    globales = [ligne for ligne in lignes if ligne["perimetre"] == "__global__"]
+    if not globales:
+        return pd.DataFrame()
+    tableau = pd.DataFrame(globales).groupby("semaine")["derive"].sum().astype(int)
+    return tableau.rename("Variables en dérive").to_frame()
+
+
+def carte_par_metier(lignes, variable):
+    """PSI par domaine métier (lignes) et par semaine (colonnes), pour une variable : carte de chaleur.
+
+    Renvoie (tableau des PSI, tableau des styles) : la couleur suit la DÉCISION du suivi (rouge = dérive :
+    PSI au-dessus du seuil ET KS significatif), pas le seul PSI, bruité sur de petites cellules.
+    """
+    cellules = [ligne for ligne in lignes
+                if ligne["variable"] == variable and ligne["perimetre"] != "__global__"]
+    if not cellules:
+        return pd.DataFrame(), pd.DataFrame()
+    tableau = pd.DataFrame(cellules)
+    psi = tableau.pivot_table(index="perimetre", columns="semaine", values="psi")
+    derive = tableau.pivot_table(index="perimetre", columns="semaine", values="derive", aggfunc="max")
+    styles = pd.DataFrame(
+        [[style_cellule(psi.loc[i, c], derive.loc[i, c]) for c in psi.columns] for i in psi.index],
+        index=psi.index, columns=psi.columns)
+    etiquettes = [f"{lettre} · {DOMAINES_ROME.get(lettre, 'Inconnu')}" for lettre in psi.index]
+    psi.index = styles.index = etiquettes
+    return psi, styles
+
+
+def style_cellule(valeur, derive):
+    """Rouge : dérive retenue ; orangé : PSI à surveiller (≥ 0,10) ; gris : cellule non calculée."""
+    if valeur is None or valeur != valeur:   # NaN : moins d'usagers que l'effectif minimal
+        return "color: #999999"
+    if derive is True or derive == 1:
+        return "background-color: #f4b6a6; color: #161616; font-weight: 600"
+    if valeur >= 0.10:
+        return "background-color: #fde3a7; color: #161616"
+    return "background-color: #ffffff; color: #161616"

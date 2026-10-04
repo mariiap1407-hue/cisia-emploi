@@ -200,8 +200,9 @@ def chemins_du_candidat_de_controle(production):
     return {nom: production.parent / "candidat" / fichier for nom, fichier in artefacts.FICHIERS.items()}
 
 
-def faux_lanceur(production, quality_gate_ok, recu):
-    """Remplace scripts/entrainer.py : écrit le candidat (et le met en service si le gate passe)."""
+def faux_lanceur(production, quality_gate_ok, recu, comparaison=None):
+    """Remplace scripts/entrainer.py : écrit le candidat (et le met en service si le gate passe et,
+    s'il y a une comparaison au modèle en production, si le candidat est meilleur)."""
     def lanceur(chemin_feedbacks, donnees, dossier_modeles, dossier_production, promouvoir):
         recu["feedbacks"] = charger_donnees(chemin_feedbacks)
         recu["dossier_production"] = dossier_production
@@ -209,9 +210,10 @@ def faux_lanceur(production, quality_gate_ok, recu):
         candidat.mkdir(parents=True)
         infos = {"run_id": "run-test", "quality_gate_ok": quality_gate_ok,
                  "echecs_quality_gate": [] if quality_gate_ok else ["F1 macro = 0.300 (seuil min : 0.62)"],
-                 "resultats_test": {"F1 macro": 0.7 if quality_gate_ok else 0.3}}
+                 "resultats_test": {"F1 macro": 0.7 if quality_gate_ok else 0.3},
+                 "comparaison_production": comparaison}
         (candidat / "infos_entrainement.json").write_text(json.dumps(infos), encoding="utf-8")
-        if quality_gate_ok and promouvoir:
+        if quality_gate_ok and promouvoir and (comparaison is None or comparaison["meilleur"]):
             publier_en_production(chemins_du_candidat_de_controle(production), dossier_production,
                                   "run-test", {"run_id": "run-test", "version_registre": "2"})
         return (0 if quality_gate_ok else 1), "Run MLflow : run-test"
@@ -258,6 +260,23 @@ def test_reentrainement_refuse_par_le_quality_gate(production, production_copiee
     assert recu["dossier_production"] == production_copiee   # le dossier de l'API, quel que soit son nom
 
 
+def test_candidat_pas_meilleur_que_la_production_non_promu(production, production_copiee, tmp_path,
+                                                          donnees_factices):
+    """Champion / challenger : quality gate respecté, mais candidat moins bon que le modèle en place."""
+    comparaison = {"meilleur": False, "motif": "Candidat moins bon que le modèle en production — "
+                   "Nb erreurs critiques : 5 contre 4.", "criteres": []}
+    application = application_reentrainement(production, production_copiee, tmp_path, donnees_factices,
+                                             faux_lanceur(production, True, {}, comparaison))
+    with TestClient(application) as client:
+        prediction_avec_feedback(client)
+        resultat = client.post("/retrain", headers=ENTETE).json()
+        assert resultat["statut"] == "non_promu_pas_meilleur"
+        assert resultat["comparaison_production"]["meilleur"] is False
+        assert resultat["version_modele"] == "controle"                      # le modèle en place reste
+    trace, = Journal(tmp_path / "journal.db").reentrainements()
+    assert trace["statut"] == "non_promu_pas_meilleur"
+
+
 def test_reentrainement_mis_en_production(production, production_copiee, tmp_path, donnees_factices):
     application = application_reentrainement(production, production_copiee, tmp_path, donnees_factices,
                                              faux_lanceur(production, True, {}))
@@ -295,6 +314,9 @@ def test_echec_du_chargement_retour_a_la_version_precedente(production, producti
     assert pointeur["run_id"] == "controle"   # le pointeur sur disque est rétabli
     trace, = Journal(tmp_path / "journal.db").reentrainements()
     assert trace["statut"] == "erreur_activation"
+    # Retour arrière tracé de façon structurée pour le suivi (B10) ; pas de version du registre ici
+    assert trace["resultats"]["retour_arriere"] == {"necessaire": True, "pointeur_retabli": True,
+                                                    "alias_retabli": None, "verifie": True}
 
 
 def test_echec_apres_publication_retour_a_la_version_precedente(production, production_copiee, tmp_path,
@@ -317,6 +339,8 @@ def test_echec_apres_publication_retour_a_la_version_precedente(production, prod
     assert pointeur["run_id"] == "controle"   # un redémarrage rechargerait bien l'ancienne version
     trace, = Journal(tmp_path / "journal.db").reentrainements()
     assert trace["statut"] == "erreur"
+    assert trace["resultats"]["retour_arriere"]["pointeur_retabli"] is True
+    assert trace["resultats"]["retour_arriere"]["verifie"] is True
 
 
 def test_aucun_feedback_utilisable(production, production_copiee, tmp_path, donnees_factices):
@@ -359,12 +383,15 @@ def test_reentrainement_avec_le_vrai_script(production, production_copiee, tmp_p
         reponse = client.post("/retrain", json={"promouvoir": False}, headers=ENTETE)
         assert reponse.status_code == 200, reponse.text
         resultat = reponse.json()
-        assert resultat["statut"] in ("candidat_non_promu", "refuse_quality_gate")
+        assert resultat["statut"] in ("candidat_non_promu", "refuse_quality_gate", "non_promu_pas_meilleur")
         assert resultat["n_feedbacks"] == 1 and "F1 macro" in resultat["resultats_test"]
         assert resultat["version_modele"] == "controle"   # pas de mise en production demandée
     infos = json.loads((production_copiee.parent / "candidats" / resultat["run_id"]
                         / "infos_entrainement.json").read_text(encoding="utf-8"))
     assert infos["n_feedbacks"] == 1
+    # Champion / challenger : le vrai script a comparé le candidat au modèle en production (même jeu de test)
+    criteres = [ligne["critere"] for ligne in infos["comparaison_production"]["criteres"]]
+    assert criteres == ["Nb erreurs critiques", "Rappel classe 2", "F1 macro"]
 
 
 def pd_manquant(valeur):
@@ -390,3 +417,17 @@ def test_api_identique_au_modele_en_production(tmp_path):
             resultat = predire(client, corps).json()
             assert resultat["classe"] == int(prevu["classe"])
             assert resultat["risque_longue_duree"] == round(float(prevu["risque_longue_duree"]), 4)
+
+
+def test_rapport_de_suivi(production, tmp_path):
+    dossier_suivi = tmp_path / "suivi"
+    application = creer_application(production, tmp_path / "journal.db", cle_api=CLE,
+                                    dossier_suivi=dossier_suivi)
+    with TestClient(application) as client:
+        assert client.get("/suivi").status_code == 401
+        assert client.get("/suivi", headers=ENTETE).status_code == 404        # pas encore de rapport
+        dossier_suivi.mkdir()
+        rapport = {"date": "2026-10-05T08:00:00+00:00", "alertes": [], "indicateurs": {},
+                   "derive_par_semaine": []}
+        (dossier_suivi / "dernier_rapport.json").write_text(json.dumps(rapport), encoding="utf-8")
+        assert client.get("/suivi", headers=ENTETE).json() == rapport

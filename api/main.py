@@ -11,7 +11,8 @@ Configuration (variables d'environnement, ou fichier .env à la racine, jamais v
 - CISIA_BASE : base SQLite du journal et des feedbacks (défaut : outputs/cisia.db) ;
 - CISIA_DONNEES : données d'entraînement d'origine pour /retrain
   (défaut : data/raw/dataset_trajectoire_emploi.csv ; absentes = /retrain répond 503) ;
-- CISIA_MIN_FEEDBACKS : nombre minimal de feedbacks pour lancer /retrain (défaut : 1).
+- CISIA_MIN_FEEDBACKS : nombre minimal de feedbacks pour lancer /retrain (défaut : 1) ;
+- CISIA_SUIVI : dossier des rapports de suivi servis par /suivi (défaut : outputs/suivi).
 
 /health = disponibilité : 200 seulement si un modèle est chargé ET une clé d'API configurée.
 
@@ -80,7 +81,7 @@ def maintenant():
 
 
 def creer_application(dossier_production=None, chemin_base=None, cle_api=None, donnees_entrainement=None,
-                      lanceur=lancer_script):
+                      lanceur=lancer_script, dossier_suivi=None):
     """Construit l'API. Les paramètres servent aux tests (modèle, base, clé et données temporaires ;
     `lanceur` remplace le script d'entraînement). cle_api="" simule une clé non configurée."""
     dossier_production = Path(dossier_production
@@ -90,6 +91,7 @@ def creer_application(dossier_production=None, chemin_base=None, cle_api=None, d
     donnees_entrainement = Path(donnees_entrainement or os.getenv(
         "CISIA_DONNEES", RACINE / "data" / "raw" / "dataset_trajectoire_emploi.csv"))
     min_feedbacks = int(os.getenv("CISIA_MIN_FEEDBACKS", "1"))
+    dossier_suivi = Path(dossier_suivi or os.getenv("CISIA_SUIVI", RACINE / "outputs" / "suivi"))
     verrou_reentrainement = threading.Lock()   # un seul réentraînement à la fois
 
     def verifier_cle(cle_fournie: str | None = Security(ENTETE_CLE)):
@@ -205,6 +207,20 @@ def creer_application(dossier_production=None, chemin_base=None, cle_api=None, d
         """Dernières requêtes de prédiction (les plus récentes en premier)."""
         return journal.historique(limite)
 
+    @application.get("/suivi", dependencies=[Depends(verifier_cle)],
+                     responses={**ERREUR_401, **ERREUR_503,
+                                404: {"model": Erreur, "description": "Aucun rapport de suivi produit"}})
+    def suivi():
+        """Dernier rapport de suivi (indicateurs, alertes, dérive par semaine et par métier).
+
+        Le rapport est produit par scripts/suivi.py (planifié chaque jour, à côté du journal et des
+        données d'entraînement) ; l'API le sert tel quel. Réservé à l'équipe data en production
+        (droits par rôle)."""
+        chemin = dossier_suivi / "dernier_rapport.json"
+        if not chemin.exists():
+            raise HTTPException(status_code=404, detail="Aucun rapport de suivi : lancer scripts/suivi.py.")
+        return json.loads(chemin.read_text(encoding="utf-8"))
+
     @application.post("/feedback", status_code=201, dependencies=[Depends(verifier_cle)],
                       responses={**ERREUR_401, **ERREUR_422, **ERREUR_503,
                                  404: {"model": Erreur, "description": "Prédiction inconnue"}})
@@ -272,28 +288,41 @@ def creer_application(dossier_production=None, chemin_base=None, cle_api=None, d
 
             def revenir_a_l_etat_precedent():
                 """Après un échec : si le pointeur a changé (publication faite), le rétablir, remettre
-                l'alias, puis VÉRIFIER. Renvoie (retour arrière confirmé ?, message pour le journal)."""
+                l'alias, puis VÉRIFIER. Renvoie (retour arrière confirmé ?, message, état structuré).
+
+                L'état (pointeur rétabli ? alias rétabli ? vérifié ?) est enregistré dans le journal :
+                le suivi (B10) distingue ainsi « pointeur rétabli » et « alias du registre rétabli »."""
                 if lire() == pointeur_avant:
-                    return True, "pointeur inchangé : aucun retour arrière nécessaire"
+                    etat = {"necessaire": False, "pointeur_retabli": None, "alias_retabli": None,
+                            "verifie": True}
+                    return True, "pointeur inchangé : aucun retour arrière nécessaire", etat
+                etat = {"necessaire": True, "pointeur_retabli": False, "alias_retabli": None,
+                        "verifie": False}
                 try:
                     if pointeur_avant is None:
                         chemin_actuelle.unlink(missing_ok=True)
                     else:
                         ecrire_en_une_operation(chemin_actuelle, pointeur_avant)
                 except OSError as erreur:
-                    return False, f"pointeur NON rétabli : {erreur!r}"
+                    return False, f"pointeur NON rétabli : {erreur!r}", etat
+                etat["pointeur_retabli"] = True
                 message = "pointeur rétabli"
                 try:
-                    retablir_alias(service_avant[1].get("version_registre") if service_avant else None)
+                    # True : alias remis ; None : sans objet (pas de version du registre)
+                    etat["alias_retabli"] = retablir_alias(
+                        service_avant[1].get("version_registre") if service_avant else None)
                 except Exception as erreur:
+                    etat["alias_retabli"] = False
                     message += f" ; alias du registre NON rétabli : {erreur!r}"
                 confirme = lire() == pointeur_avant
-                return confirme, message + (" et vérifié" if confirme else " mais NON vérifié")
+                etat["verifie"] = confirme
+                return confirme, message + (" et vérifié" if confirme else " mais NON vérifié"), etat
 
             def echec(statut, erreur, run_id=None):
-                confirme, retour = revenir_a_l_etat_precedent()
+                confirme, retour, etat = revenir_a_l_etat_precedent()
                 journal.enregistrer_reentrainement(date_debut, maintenant(), statut, len(feedbacks), run_id,
                                                    version_avant, version_de(application.state.service),
+                                                   resultats={"retour_arriere": etat},
                                                    message_erreur=f"{erreur!r} ; {retour}")
                 if confirme:
                     detail = f"Échec du réentraînement : la version {version_avant} reste en service."
@@ -323,7 +352,8 @@ def creer_application(dossier_production=None, chemin_base=None, cle_api=None, d
             journal.enregistrer_reentrainement(
                 date_debut, maintenant(), resultat["statut"], resultat["n_feedbacks"], resultat["run_id"],
                 version_avant, version_apres,
-                {"resultats_test": resultat["resultats_test"], "echecs": resultat["echecs_quality_gate"]})
+                {"resultats_test": resultat["resultats_test"], "echecs": resultat["echecs_quality_gate"],
+                 "comparaison_production": resultat["comparaison_production"]})
             return {**resultat, "version_modele_avant": version_avant, "version_modele": version_apres,
                     "duree_s": round(time.perf_counter() - debut, 1)}
         finally:

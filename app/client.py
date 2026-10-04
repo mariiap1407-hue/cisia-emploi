@@ -62,9 +62,21 @@ def envoyer_avis(id_prediction, avis, classe_proposee=None, motif=None, precisio
     return appeler("POST", "/avis", corps)
 
 
-def envoyer_situation_observee(id_prediction, classe_reelle):
-    return appeler("POST", "/feedback", {"id_prediction": id_prediction, "classe_reelle": classe_reelle})
+def envoyer_situation_observee(id_prediction, classe_reelle, source):
+    """source : « référentiel » ou « saisie manuelle » (suivi du biais des étiquettes)."""
+    return appeler("POST", "/feedback", {"id_prediction": id_prediction, "classe_reelle": classe_reelle,
+                                         "commentaire": f"source : {source}"})
 
 
 def historique(limite=500):
     return appeler("GET", f"/history?limite={limite}")
+
+
+def suivi():
+    """Dernier rapport de suivi ; None s'il n'en existe pas encore (404)."""
+    try:
+        return appeler("GET", "/suivi")
+    except ErreurAPI as erreur:
+        if erreur.code == 404:
+            return None
+        raise

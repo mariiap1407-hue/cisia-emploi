@@ -67,3 +67,28 @@ def verifier_seuils_qualite(resultats):
         elif (sens == "max" and valeur > seuil) or (sens == "min" and valeur < seuil):
             echecs.append(f"{indicateur} = {valeur:.3f} (seuil {sens} : {seuil})")
     return echecs
+
+
+# Champion / challenger : le candidat est comparé au modèle EN PRODUCTION, sur le même jeu de test et
+# avec la même règle de décision. Critères par ordre de priorité (comparaison lexicographique) : une
+# erreur critique (chômeur de longue durée orienté en accompagnement léger) coûte bien plus cher qu'une
+# fausse alerte ; on ne regarde le critère suivant qu'en cas d'égalité sur le précédent.
+CRITERES_CHAMPION = [("Nb erreurs critiques", "min"), ("Rappel classe 2", "max"), ("F1 macro", "max")]
+
+
+def comparer_au_modele_en_production(candidat, production):
+    """Renvoie {meilleur, motif, criteres} ; à égalité sur les trois critères, le modèle en place reste."""
+    criteres = [{"critere": nom, "sens": sens, "candidat": round(float(candidat[nom]), 4),
+                 "production": round(float(production[nom]), 4)} for nom, sens in CRITERES_CHAMPION]
+    for ligne in criteres:
+        c, p = ligne["candidat"], ligne["production"]
+        if c == p:
+            continue
+        meilleur = c < p if ligne["sens"] == "min" else c > p
+        verdict = "Candidat meilleur que le modèle en production" if meilleur else \
+            "Candidat moins bon que le modèle en production"
+        return {"meilleur": meilleur, "criteres": criteres,
+                "motif": f"{verdict} — {ligne['critere']} : {c:g} contre {p:g}."}
+    return {"meilleur": False, "criteres": criteres,
+            "motif": "Candidat équivalent au modèle en production sur les trois critères : "
+                     "le modèle en place est conservé."}

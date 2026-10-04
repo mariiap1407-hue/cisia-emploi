@@ -38,7 +38,9 @@ def interface(production, tmp_path, monkeypatch):  # noqa: F811
     monkeypatch.syspath_prepend(str(DOSSIER_APP))      # l'interface importe « client » et « presentation »
     import client as module_client
 
-    with TestClient(creer_application(production, tmp_path / "journal.db", cle_api=CLE)) as api:
+    application = creer_application(production, tmp_path / "journal.db", cle_api=CLE,
+                                    dossier_suivi=tmp_path / "suivi")
+    with TestClient(application) as api:
         def appeler(methode, chemin, corps=None, delai=30):
             reponse = api.request(methode, chemin, json=corps, headers={"X-API-Key": CLE})
             if reponse.status_code >= 400:
@@ -99,3 +101,41 @@ def test_parcours_complet_du_conseiller(interface):
     assert element["id_usager"] == "DE-0003"
     assert element["situation_observee"]["classe_reelle"] == 1
     assert element["avis_conseiller"]["precisions"] == "Formation qualifiante en cours"
+
+
+def test_page_suivi_du_modele(interface, tmp_path, donnees_factices):
+    """Page « Suivi » : rapport RÉEL du suivi (journal factice dégradé, référence factice), via /suivi."""
+    import importlib.util
+    import json
+    from datetime import datetime, timezone
+
+    from api.journal import Journal
+    from cisia.preparation import charger_donnees, decouper
+    from cisia.suivi import analyser
+
+    at, _ = interface
+    at.run()
+    at.button(key="bouton_nav_suivi").click().run()
+    assert not at.exception
+    assert any("Aucun rapport" in str(w.value) for w in at.warning)          # avant le premier rapport
+
+    script = RACINE / "scripts" / "generer_journal_factice.py"
+    spec = importlib.util.spec_from_file_location("generateur", script)
+    generateur = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(generateur)
+    journal = tmp_path / "journal_degrade.db"
+    generateur.remplir(Journal(journal), "degrade", datetime.now(timezone.utc),
+                       profils=generateur.profils_factices(), nombre=1600, jours=21)
+    entrainement, _ = decouper(charger_donnees(donnees_factices / "entrainement.csv"))
+    seuils = json.loads((RACINE / "config" / "seuils_suivi.json").read_text(encoding="utf-8"))
+    rapport = analyser(journal, seuils, reference=entrainement[generateur.COLONNES].to_dict("records"))
+    (tmp_path / "suivi").mkdir()
+    (tmp_path / "suivi" / "dernier_rapport.json").write_text(json.dumps(rapport), encoding="utf-8")
+
+    at.run()
+    assert not at.exception
+    affiche = texte(at)
+    assert "Alertes" in affiche and "registre MLflow" in affiche and "biais des étiquettes" in affiche
+    assert len(at.dataframe) >= 2                                            # tableau PSI + carte par métier
+    at.selectbox(key="suivi_variable").set_value("age").run()
+    assert not at.exception

@@ -11,6 +11,8 @@ from app.presentation import (
     DIPLOMES,
     age_au,
     ajouter_mois,
+    alertes_triees,
+    carte_par_metier,
     charger_referentiel,
     date_locale,
     date_observation_demo,
@@ -21,6 +23,7 @@ from app.presentation import (
     libelle_rome,
     premier_entretien_valide,
     retour_conseiller,
+    semaines_en_derive,
     situation_depuis_referentiel,
     situation_observee,
     texte_regle,
@@ -182,3 +185,26 @@ def test_episode_stable_quel_que_soit_le_jour_de_consultation(monkeypatch):
     assert resultats[0] == resultats[1] == resultats[2]               # même chronologie, même étiquette
     assert resultats[0][1] == date(2027, 11, 8)                       # 04/10/2026 + 400 jours
     assert episode_de_la_prediction("INCONNU", prediction) is None
+
+
+def test_tableau_de_bord_du_suivi():
+    lignes = [
+        {"semaine": "2026-S39", "perimetre": "__global__", "variable": "age", "psi": 0.04, "derive": False},
+        {"semaine": "2026-S40", "perimetre": "__global__", "variable": "age", "psi": 0.05, "derive": False},
+        {"semaine": "2026-S40", "perimetre": "__global__", "variable": "longueur_synthese", "psi": 7.0,
+         "derive": True},
+        {"semaine": "2026-S40", "perimetre": "N", "variable": "age", "psi": 4.2, "derive": True},
+        # K : PSI élevé mais KS non significatif → pas de dérive retenue
+        {"semaine": "2026-S40", "perimetre": "K", "variable": "age", "psi": 0.41, "derive": False},
+        {"semaine": "2026-S39", "perimetre": "N", "variable": "age", "psi": 0.03, "derive": False},
+    ]
+    assert semaines_en_derive(lignes)["Variables en dérive"].to_dict() == {"2026-S39": 0, "2026-S40": 1}
+    psi, styles = carte_par_metier(lignes, "age")
+    assert list(psi.index) == ["K · Services à la personne et à la collectivité",
+                               "N · Transport et logistique"]
+    assert "#f4b6a6" in styles.loc["N · Transport et logistique", "2026-S40"]       # dérive retenue : rouge
+    assert "#f4b6a6" not in styles.loc["K · Services à la personne et à la collectivité", "2026-S40"]
+    k = "K · Services à la personne et à la collectivité"
+    assert "#999999" in styles.loc[k, "2026-S39"]                                    # cellule absente
+    rapport = {"alertes": [{"niveau": "attention"}, {"niveau": "critique"}]}
+    assert [a["niveau"] for a in alertes_triees(rapport)] == ["critique", "attention"]

@@ -174,13 +174,17 @@ class Reentrainement(BaseModel):
 
 
 class ResultatReentrainement(BaseModel):
-    statut: Literal["mis_en_production", "candidat_non_promu", "refuse_quality_gate"]
+    statut: Literal["mis_en_production", "candidat_non_promu", "refuse_quality_gate",
+                    "non_promu_pas_meilleur"]
     n_feedbacks: int = Field(description="Feedbacks ajoutés aux données d'entraînement")
     n_feedbacks_ecartes: int = Field(0, description="Feedbacks écartés (profil déjà dans le test)")
     run_id: str = Field(description="Run MLflow du nouvel entraînement")
     quality_gate_ok: bool
     echecs_quality_gate: list[str]
     resultats_test: dict = Field(description="Indicateurs sur le jeu de test (inchangé : comparable)")
+    comparaison_production: dict | None = Field(
+        None, description="Champion / challenger : candidat comparé au modèle en production (même jeu de "
+                          "test, même règle) ; promu seulement s'il est meilleur")
     version_modele_avant: str | None
     version_modele: str | None = Field(description="Version en service APRÈS la demande")
     duree_s: float

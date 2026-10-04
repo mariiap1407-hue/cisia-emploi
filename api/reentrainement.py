@@ -96,10 +96,13 @@ def reentrainer(feedbacks, donnees, dossier_production, promouvoir=True, lanceur
         raise EchecReentrainement(f"code {code_retour} ; fin des sorties : {sorties[-2000:]}")
 
     infos = json.loads(chemin_infos.read_text(encoding="utf-8"))
+    comparaison = infos.get("comparaison_production")
     if not infos["quality_gate_ok"]:
         statut = "refuse_quality_gate"
     elif run_en_service(dossier_production) == infos["run_id"]:
         statut = "mis_en_production"
+    elif comparaison is not None and not comparaison["meilleur"]:
+        statut = "non_promu_pas_meilleur"   # champion / challenger : le modèle en place reste
     elif promouvoir:   # gate respecté mais mise en production non faite : anomalie, pas un refus
         raise EchecReentrainement(f"mise en production non effectuée (code {code_retour}) ; "
                                   f"fin des sorties : {sorties[-2000:]}")
@@ -109,13 +112,19 @@ def reentrainer(feedbacks, donnees, dossier_production, promouvoir=True, lanceur
             "n_feedbacks_ecartes": infos.get("n_feedbacks_ecartes", 0), "run_id": infos["run_id"],
             "quality_gate_ok": bool(infos["quality_gate_ok"]),
             "echecs_quality_gate": infos.get("echecs_quality_gate", []),
-            "resultats_test": infos.get("resultats_test", {})}
+            "resultats_test": infos.get("resultats_test", {}),
+            "comparaison_production": comparaison}
 
 
 def retablir_alias(version):
-    """Remet l'alias « production » du registre sur `version` (retour arrière après un échec d'activation)."""
+    """Remet l'alias « production » du registre sur `version` (retour arrière après un échec d'activation).
+
+    Renvoie True si l'alias a été remis, None s'il n'y a rien à remettre (pas de version du registre,
+    ou registre désactivé). Une erreur du registre est levée à l'appelant.
+    """
     if not version or os.getenv("USE_REGISTRY", "true").lower() != "true":
-        return
+        return None
     suivi_par_defaut = f"sqlite:///{(RACINE / 'mlflow.db').as_posix()}"   # comme scripts/entrainer.py
     mlflow.set_tracking_uri(os.getenv("MLFLOW_TRACKING_URI", suivi_par_defaut))
     mlflow.MlflowClient().set_registered_model_alias(NOM_MODELE, "production", str(version))
+    return True

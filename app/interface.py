@@ -11,6 +11,7 @@ from datetime import date, datetime, timezone
 from html import escape
 from pathlib import Path
 
+import pandas as pd
 import streamlit as st
 
 import client
@@ -21,9 +22,12 @@ from presentation import (
     DIPLOMES,
     METIERS_ROME,
     MOTIFS,
+    NOMS_VARIABLES,
     PERIODES,
     STATUTS_RETOUR,
     age_au,
+    alertes_triees,
+    carte_par_metier,
     charger_referentiel,
     date_locale,
     episode_de_la_prediction,
@@ -32,6 +36,7 @@ from presentation import (
     libelle_metier,
     premier_entretien_valide,
     retour_conseiller,
+    semaines_en_derive,
     situation_depuis_referentiel,
     situation_observee,
     texte_regle,
@@ -106,14 +111,15 @@ if not etat.get("intro_vue"):
 
 def entete():
     with st.container(key="entete"):
-        colonnes = st.columns([2.3, 1.5, 1.1, 0.8, 3.0, 1.8], vertical_alignment="center")
+        colonnes = st.columns([2.3, 1.5, 1.1, 0.8, 0.8, 2.2, 1.8], vertical_alignment="center")
         colonnes[0].image(str(LOGO), width=220)
-        for colonne, (page, libelle) in zip(colonnes[1:4], [("analyse", "Nouvelle analyse"),
-                                                           ("historique", "Historique"), ("aide", "Aide")]):
+        for colonne, (page, libelle) in zip(colonnes[1:5], [("analyse", "Nouvelle analyse"),
+                                                           ("historique", "Historique"), ("suivi", "Suivi"),
+                                                           ("aide", "Aide")]):
             actif = etat.page == page or (page == "analyse" and etat.page in ("resultat", "appreciation"))
             with colonne.container(key=f"nav_{page}{'_actif' if actif else ''}"):
                 st.button(libelle, on_click=aller, args=(page,), key=f"bouton_nav_{page}")
-        colonnes[5].markdown('<div class="espace">👤 Espace conseiller</div>', unsafe_allow_html=True)
+        colonnes[6].markdown('<div class="espace">👤 Espace conseiller</div>', unsafe_allow_html=True)
 
 
 def pied():
@@ -367,9 +373,9 @@ def page_resultat():
     html(f'<p class="discret">Modèle : version {escape(str(sorties.get("version_modele", "")))}</p>')
 
 
-def enregistrer_observee(courant, classe):
+def enregistrer_observee(courant, classe, source):
     try:
-        client.envoyer_situation_observee(courant["id_prediction"], classe)
+        client.envoyer_situation_observee(courant["id_prediction"], classe, source)
         courant["observee"] = {"classe_reelle": classe}
         etat.message = ("ok", "La situation observée est enregistrée.")
     except client.ErreurAPI as erreur:
@@ -417,7 +423,7 @@ def situation_observee_formulaire(courant):
                 html(f'<p>Référentiel : {escape(detail)} → {badge(CLASSES[connue]["court"], "vert")}</p>')
                 if st.button("Enregistrer la situation du référentiel", type="primary",
                              key=f"enreg_ref_{cle}"):
-                    enregistrer_observee(courant, connue)
+                    enregistrer_observee(courant, connue, "référentiel")
     else:
         html('<p class="aide-saisie">Dossier absent du référentiel : saisie manuelle uniquement.</p>')
 
@@ -426,7 +432,7 @@ def situation_observee_formulaire(courant):
         choix = st.radio("Délai réellement constaté", list(CLASSES), horizontal=True, index=None,
                          format_func=lambda c: CLASSES[c]["court"], key=f"observee_choix_{cle}")
         if st.button("Enregistrer la situation observée", disabled=choix is None, key=f"enreg_manuel_{cle}"):
-            enregistrer_observee(courant, choix)
+            enregistrer_observee(courant, choix, "saisie manuelle")
 
 
 def nouvelle_analyse():
@@ -576,6 +582,100 @@ def page_historique():
         st.rerun()
 
 
+# --- Suivi du modèle (équipe data) --------------------------------------------------------------
+
+def pourcentage(valeur):
+    return "—" if valeur is None else f"{valeur:.0%}"
+
+
+def page_suivi():
+    prototype()
+    st.title("Suivi du modèle")
+    html('<div class="sous-titre">Le modèle vieillit-il ? Service, dérive des données, performance réelle, '
+         'réentraînements.</div>')
+    info("Réservé à l'équipe data (en production : accès par rôle). Rapport produit chaque jour par "
+         "<b>scripts/suivi.py</b>, à côté du journal et des données d'entraînement.")
+    try:
+        rapport = client.suivi()
+    except client.ErreurAPI as erreur:
+        st.error(erreur.message)
+        return
+    if rapport is None:
+        st.warning("Aucun rapport de suivi pour l'instant : lancer « python scripts/suivi.py --reference "
+                   "data/raw/dataset_trajectoire_emploi.csv ».")
+        return
+    indicateurs = rapport["indicateurs"]
+    html(f'<p class="aide-saisie">Rapport du {date_locale(rapport["date"], avec_a=True)} · '
+         f'{rapport["periode"]["jours"]} derniers jours</p>')
+
+    # Indicateurs clés
+    service, accord = indicateurs["service"], indicateurs["accord_conseillers"]
+    performance = indicateurs["performance_observee"]
+    tuiles = st.columns(4)
+    tuiles[0].metric("Prédictions", indicateurs["predictions"]["nombre"])
+    tuiles[1].metric("Latence (95e centile)",
+                     f"{service['latence']['p95_ms']:.0f} ms" if service.get("latence") else "—")
+    tuiles[2].metric("Accord conseillers / modèle", pourcentage(accord.get("taux_accord")))
+    tuiles[3].metric("Erreurs critiques observées", pourcentage(performance.get("Erreurs critiques (2→0)")))
+
+    # Alertes
+    alertes = alertes_triees(rapport)
+    st.subheader(f"Alertes ({len(alertes)})")
+    if not alertes:
+        st.success("Rien à signaler sur la période.")
+    for alerte in alertes:
+        ton = "ambre" if alerte["niveau"] == "critique" else "bleu"
+        html(f'<p>{badge(alerte["niveau"].capitalize(), ton)} <b>{escape(alerte["indicateur"])}</b> — '
+             f'{escape(alerte["message"])}</p>')
+
+    # Dérive des données (PSI, KS), comme le tableau de bord du module M6
+    lignes = rapport.get("derive_par_semaine") or []
+    st.subheader("Dérive des données par rapport à l'entraînement")
+    derive = indicateurs.get("derive_des_donnees", {})
+    if "statut" in derive:
+        st.info(f"Dérive {derive['statut']}.")
+    else:
+        st.dataframe(pd.DataFrame([{"Variable": NOMS_VARIABLES.get(v, v), "PSI": r.get("psi"),
+                                    "Dérive": r.get("derive", r.get("statut")),
+                                    "KS (p-valeur)": r.get("ks_p_valeur")} for v, r in derive.items()]),
+                     hide_index=True, width="stretch")
+        html('<p class="aide-saisie">PSI : &lt; 0,10 stable ; 0,10 à 0,25 dérive modérée ; ≥ 0,25 dérive '
+             'forte (alerte). Le KS indique la significativité ; c\'est le PSI (ampleur de l\'écart) qui '
+             'décide.</p>')
+    if lignes:
+        st.markdown("**Variables en dérive par semaine (niveau global)**")
+        st.bar_chart(semaines_en_derive(lignes), color="#000091")
+        st.markdown("**Carte de chaleur des écarts par métier (PSI, semaine par semaine)**")
+        variables = sorted({ligne["variable"] for ligne in lignes}, key=lambda v: NOMS_VARIABLES.get(v, v))
+        variable = st.selectbox("Variable", variables, format_func=lambda v: NOMS_VARIABLES.get(v, v),
+                                key="suivi_variable")
+        carte, styles = carte_par_metier(lignes, variable)
+        if carte.empty:
+            st.info("Pas assez d'usagers par métier et par semaine pour cette variable.")
+        else:
+            st.dataframe(carte.style.apply(lambda _: styles, axis=None).format("{:.2f}", na_rep="—"),
+                         width="stretch")
+            html('<p class="aide-saisie">Rouge : dérive retenue (PSI ≥ 0,35 ET KS significatif) ; orangé : '
+                 'PSI ≥ 0,10, à surveiller ; « — » : moins de 50 usagers dans la cellule. Un écart localisé '
+                 'sur un métier peut disparaître dans la moyenne globale.</p>')
+
+    # Étiquettes et réentraînements
+    st.subheader("Situations observées et réentraînements")
+    gauche, droite = st.columns(2)
+    with gauche:
+        st.markdown(f"**{performance['situations_observees']} situations observées**")
+        for source, nombre in (performance.get("par_source") or {}).items():
+            st.markdown(f"- {escape(source)} : {nombre}")
+        couverture = performance.get("couverture_par_classe_predite") or {}
+        st.markdown("Part des prédictions ayant reçu une situation observée : " + " · ".join(
+            f"{CLASSES[int(c)]['court']} {pourcentage(v)}" for c, v in couverture.items()))
+    with droite:
+        reentrainements = indicateurs["reentrainements"]
+        st.markdown(f"**{reentrainements['nombre']} réentraînement(s)**")
+        for statut, nombre in reentrainements["statuts"].items():
+            st.markdown(f"- {escape(statut.replace('_', ' '))} : {nombre}")
+
+
 # --- Aide ---------------------------------------------------------------------------------------
 
 def page_aide():
@@ -609,6 +709,10 @@ La nationalité, la commune et le statut d'allocataire ne sont **pas** demandés
   de préférence en interrogeant le référentiel des usagers (dates d'inscription et de reprise d'emploi).
   C'est la seule information utilisée pour réentraîner le modèle.
 
+**Suivi du modèle** (équipe data) : alertes du service, dérive des données par rapport à l'entraînement
+(PSI et test de Kolmogorov-Smirnov, semaine par semaine et par métier), performance réelle sur les
+situations observées, réentraînements. Rapport produit chaque jour par `scripts/suivi.py`.
+
 **Prototype** : les données affichées sont fictives ; ne saisissez jamais de nom ni de coordonnées.
 """)
 
@@ -617,5 +721,5 @@ La nationalité, la commune et le statut d'allocataire ne sont **pas** demandés
 
 entete()
 {"analyse": page_analyse, "resultat": page_resultat, "appreciation": page_appreciation,
- "historique": page_historique, "aide": page_aide}[etat.page]()
+ "historique": page_historique, "suivi": page_suivi, "aide": page_aide}[etat.page]()
 pied()

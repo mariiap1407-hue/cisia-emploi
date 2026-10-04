@@ -29,7 +29,10 @@ de test reste exactement celui du notebook (jeu d'ACCEPTATION fixe : il sert à 
 en production, ce n'est donc plus une évaluation finale « jamais vue »). Un feedback dont le profil
 (âge, diplôme, ancienneté, code ROME, synthèse) est identique à un usager du jeu de test est écarté :
 sinon, un usager du test pourrait entrer dans l'entraînement par la boucle predict → feedback.
-Passer le quality gate = respecter des critères minimaux, pas forcément faire mieux que le modèle en place.
+Passer le quality gate = respecter des critères minimaux. Pour REMPLACER le modèle en place, le candidat
+doit en plus faire mieux que lui (champion / challenger), sur le même jeu de test et avec la même règle :
+d'abord moins d'erreurs critiques, puis (à égalité) un meilleur rappel de la classe 2, puis un meilleur
+F1 macro. À égalité sur les trois, le modèle en place est conservé.
 
 Usage :
     python scripts/entrainer.py --promouvoir                       # vraies données, mise en production
@@ -60,10 +63,21 @@ from sklearn.model_selection import GridSearchCV
 from cisia import artefacts
 from cisia.decision import charger_regle
 from cisia.entrainement import entrainer, evaluer, predire
-from cisia.evaluation import CV, METRIQUES, verifier_seuils_qualite
+from cisia.evaluation import (
+    CV,
+    METRIQUES,
+    comparer_au_modele_en_production,
+    mesurer,
+    verifier_seuils_qualite,
+)
 from cisia.modele import REGLAGES_RETENUS, construire_pipeline
-from cisia.modele_mlflow import options_modele, publier_en_production
-from cisia.preparation import charger_donnees, decouper, nettoyer, separer_x_y
+from cisia.modele_mlflow import (
+    FICHIER_ACTUELLE,
+    charger_modele_en_service,
+    options_modele,
+    publier_en_production,
+)
+from cisia.preparation import CIBLE, charger_donnees, decouper, nettoyer, separer_x_y
 
 RACINE = Path(__file__).resolve().parents[1]
 DONNEES_PAR_DEFAUT = RACINE / "data" / "raw" / "dataset_trajectoire_emploi.csv"
@@ -251,6 +265,19 @@ def main():
         echecs = verifier_seuils_qualite(resultats)
         mlflow.log_metric("quality_gate_ok", int(not echecs))
 
+        # 4 bis. Champion / challenger : comparaison au modèle EN PRODUCTION, même jeu de test, même règle
+        dossier_production = Path(args.production or Path(args.sortie) / "production")
+        comparaison = None
+        if (dossier_production / FICHIER_ACTUELLE).exists():
+            champion = charger_modele_en_service(dossier_production)
+            classes_production = champion.predict(test.drop(columns=[CIBLE]))["classe"].to_numpy()
+            resultats_production = mesurer(y_test, classes_production)
+            comparaison = comparer_au_modele_en_production(resultats, resultats_production)
+            mlflow.log_metrics({f"production_{nom_mlflow(ligne['critere'])}": ligne["production"]
+                                for ligne in comparaison["criteres"]})
+            mlflow.log_metric("meilleur_que_production", int(comparaison["meilleur"]))
+            print(comparaison["motif"])
+
         # 5. Candidat : dossier propre à ce run (jamais écrasé), puis modèle MLflow complet dans le registre
         infos = {"run_id": run.info.run_id, "date": datetime.now().isoformat(timespec="seconds"),
                  "donnees": Path(args.donnees).name, "donnees_sha256": artefacts.empreinte(args.donnees),
@@ -258,7 +285,8 @@ def main():
                  "n_feedbacks": n_feedbacks, "n_feedbacks_ecartes": n_feedbacks_ecartes,
                  "n_entrainement": len(X_train), "n_test": len(X_test),
                  "quality_gate_ok": not echecs, "echecs_quality_gate": echecs,
-                 "resultats_test": {k: round(float(v), 4) for k, v in resultats.items()}}
+                 "resultats_test": {k: round(float(v), 4) for k, v in resultats.items()},
+                 "comparaison_production": comparaison}
         dossier_candidat = Path(args.sortie) / "candidats" / run.info.run_id
         chemins = artefacts.sauvegarder(dossier_candidat, modele, correction, regle, infos)
         info_modele = mlflow.pyfunc.log_model(name="modele", **options_modele(chemins),
@@ -270,6 +298,8 @@ def main():
             print("Quality gate NON respecté : " + " ; ".join(echecs))
             print(f"Candidat conservé pour analyse dans {dossier_candidat} ; "
                   "la production n'est pas modifiée.")
+        elif comparaison is not None and not comparaison["meilleur"]:
+            print(f"Non promu : {comparaison['motif']} Candidat conservé dans {dossier_candidat}.")
         elif not args.promouvoir:
             print(f"Quality gate respecté. Candidat enregistré dans {dossier_candidat}"
                   + (f" et dans le registre (version {version})" if version else "")
@@ -279,7 +309,6 @@ def main():
             def publier_alias():
                 MlflowClient().set_registered_model_alias(nom_modele, "production", str(version))
 
-            dossier_production = Path(args.production or Path(args.sortie) / "production")
             dossier = publier_en_production(chemins, dossier_production, run.info.run_id,
                                             {"run_id": run.info.run_id, "version_registre": version},
                                             publier_alias if utiliser_registre else None)
