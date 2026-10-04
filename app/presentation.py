@@ -295,12 +295,33 @@ def alertes_triees(rapport):
 
 
 def semaines_en_derive(lignes):
-    """Nombre de variables en dérive par semaine, au niveau global (graphique du tableau de bord)."""
+    """Variables en dérive par semaine, au niveau global : une colonne par variable (0 ou 1), pour un
+    graphique EMPILÉ (on voit quelles variables dérivent, pas seulement combien)."""
     globales = [ligne for ligne in lignes if ligne["perimetre"] == "__global__"]
     if not globales:
         return pd.DataFrame()
-    tableau = pd.DataFrame(globales).groupby("semaine")["derive"].sum().astype(int)
-    return tableau.rename("Variables en dérive").to_frame()
+    tableau = pd.DataFrame(globales).pivot_table(index="semaine", columns="variable", values="derive",
+                                                 aggfunc="max", fill_value=False).astype(int)
+    tableau.columns = [NOMS_VARIABLES.get(v, v) for v in tableau.columns]
+    tableau.columns.name = None
+    return tableau
+
+
+def variable_par_defaut(rapport, variables):
+    """Variable affichée d'abord dans la carte par métier : celle d'une alerte « dérive localisée »."""
+    for alerte in rapport.get("alertes", []):
+        if alerte["indicateur"] == "dérive localisée":
+            for variable in variables:
+                if f"« {variable} »" in alerte["message"]:
+                    return variable
+    return variables[0] if variables else None
+
+
+def format_valeur(valeur, chiffres=4):
+    """Nombre pour un tableau : « — » si la valeur n'est pas calculée (jamais « None »)."""
+    if valeur is None or (isinstance(valeur, float) and valeur != valeur):
+        return "—"
+    return f"{valeur:.{chiffres}g}" if isinstance(valeur, float) else str(valeur)
 
 
 def carte_par_metier(lignes, variable):

@@ -16,10 +16,13 @@ Sorties :
 - outputs/suivi/derive_par_semaine.csv (avec --reference : PSI par semaine et par métier) ;
 - outputs/suivi/alertes.log (une ligne par alerte, horodatée : à surveiller ou à brancher sur un
   outil d'alerte) ;
-- code de sortie : 0 = rien à signaler, 1 = alerte « attention », 2 = alerte « critique ». Un
+- code de sortie : 0 = aucune alerte, 1 = alerte « attention », 2 = alerte « critique ». Un
   planificateur (tâche planifiée Windows, cron, job CI) peut ainsi déclencher une notification.
+  « Aucune alerte » ne veut pas dire « tout va bien » : le rapport liste aussi les indicateurs NON
+  ÉVALUABLES (trop peu de données), avec la raison.
 
-En production : lancé chaque jour par un planificateur, sur le serveur qui héberge le journal.
+Prototype : lancé à la main. En production, il serait planifié chaque jour sur le serveur qui héberge le
+journal (planification non configurée dans ce dépôt : voir les améliorations V2).
 """
 
 import argparse
@@ -41,7 +44,10 @@ COLONNES_PROFIL = ["age", "niveau_diplome", "anciennete_poste_ans", "code_rome_v
 
 
 def afficher(rapport):
-    print(f"Suivi du {rapport['date']} — {rapport['periode']['jours']} derniers jours")
+    periode = rapport["periode"]
+    print(f"Suivi du {rapport['date']} — service et dérive : {periode['jours']} derniers jours ; "
+          f"situations observées enregistrées sur {periode['etiquettes_jours']} jours ; cohortes mûres : "
+          f"prédictions de {periode['cohortes_mures_jours'][0]} à {periode['cohortes_mures_jours'][1]} jours")
     for section, valeurs in rapport["indicateurs"].items():
         print(f"\n[{section}]")
         for nom, valeur in valeurs.items():
@@ -53,6 +59,11 @@ def afficher(rapport):
         detail = (f" (valeur {alerte['valeur']}, seuil {alerte['seuil']})"
                   if alerte["valeur"] is not None else "")
         print(f"  [{alerte['niveau'].upper()}] {alerte['indicateur']} : {alerte['message']}{detail}")
+    non_evaluables = rapport.get("non_evaluables") or []
+    print(f"\n{len(non_evaluables)} indicateur(s) non évaluable(s)"
+          + (" — aucune alerte ne signifie pas que tout va bien" if non_evaluables else ""))
+    for element in non_evaluables:
+        print(f"  [NON ÉVALUABLE] {element['indicateur']} : {element['raison']}")
 
 
 def main():

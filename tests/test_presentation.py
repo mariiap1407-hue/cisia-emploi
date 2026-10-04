@@ -18,6 +18,7 @@ from app.presentation import (
     date_observation_demo,
     episode_de_la_prediction,
     filtrer,
+    format_valeur,
     lecture_explication,
     libelle_metier,
     libelle_rome,
@@ -28,6 +29,7 @@ from app.presentation import (
     situation_observee,
     texte_regle,
     usager_pour_api,
+    variable_par_defaut,
 )
 
 
@@ -198,7 +200,15 @@ def test_tableau_de_bord_du_suivi():
         {"semaine": "2026-S40", "perimetre": "K", "variable": "age", "psi": 0.41, "derive": False},
         {"semaine": "2026-S39", "perimetre": "N", "variable": "age", "psi": 0.03, "derive": False},
     ]
-    assert semaines_en_derive(lignes)["Variables en dérive"].to_dict() == {"2026-S39": 0, "2026-S40": 1}
+    empile = semaines_en_derive(lignes)          # une colonne par variable : graphique empilé
+    assert empile.to_dict() == {"Âge": {"2026-S39": 0, "2026-S40": 0},
+                                "Longueur de la synthèse": {"2026-S39": 0, "2026-S40": 1}}
+    rapport = {"alertes": [{"indicateur": "dérive des synthèses", "message": "…"},
+                           {"indicateur": "dérive localisée",
+                            "message": "métiers « N » : dérive de « age »"}]}
+    assert variable_par_defaut(rapport, ["anciennete_poste_ans", "age"]) == "age"
+    assert variable_par_defaut({"alertes": []}, ["anciennete_poste_ans", "age"]) == "anciennete_poste_ans"
+    assert format_valeur(None) == format_valeur(float("nan")) == "—" and format_valeur(0.12345) == "0.1235"
     psi, styles = carte_par_metier(lignes, "age")
     assert list(psi.index) == ["K · Services à la personne et à la collectivité",
                                "N · Transport et logistique"]

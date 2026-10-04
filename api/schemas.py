@@ -184,7 +184,8 @@ class ResultatReentrainement(BaseModel):
     resultats_test: dict = Field(description="Indicateurs sur le jeu de test (inchangé : comparable)")
     comparaison_production: dict | None = Field(
         None, description="Champion / challenger : candidat comparé au modèle en production (même jeu de "
-                          "test, même règle) ; promu seulement s'il est meilleur")
+                          "test ; meme_regle indique si les deux règles de décision sont identiques) ; "
+                          "promu seulement s'il est meilleur")
     version_modele_avant: str | None
     version_modele: str | None = Field(description="Version en service APRÈS la demande")
     duree_s: float

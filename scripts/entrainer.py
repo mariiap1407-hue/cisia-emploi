@@ -30,9 +30,11 @@ en production, ce n'est donc plus une évaluation finale « jamais vue »). Un f
 (âge, diplôme, ancienneté, code ROME, synthèse) est identique à un usager du jeu de test est écarté :
 sinon, un usager du test pourrait entrer dans l'entraînement par la boucle predict → feedback.
 Passer le quality gate = respecter des critères minimaux. Pour REMPLACER le modèle en place, le candidat
-doit en plus faire mieux que lui (champion / challenger), sur le même jeu de test et avec la même règle :
-d'abord moins d'erreurs critiques, puis (à égalité) un meilleur rappel de la classe 2, puis un meilleur
-F1 macro. À égalité sur les trois, le modèle en place est conservé.
+doit en plus faire mieux que lui (champion / challenger), sur le même jeu de test : d'abord moins
+d'erreurs critiques, puis (à égalité) un meilleur rappel de la classe 2, puis un meilleur F1 macro. À
+égalité sur les trois, le modèle en place est conservé. Comparaison lexicographique : une erreur critique
+évitée peut justifier une baisse du rappel ou du F1, tant que les seuils minimaux restent respectés.
+Chaque modèle applique sa propre règle de décision ; si elles diffèrent, c'est tracé (meme_regle).
 
 Usage :
     python scripts/entrainer.py --promouvoir                       # vraies données, mise en production
@@ -265,7 +267,10 @@ def main():
         echecs = verifier_seuils_qualite(resultats)
         mlflow.log_metric("quality_gate_ok", int(not echecs))
 
-        # 4 bis. Champion / challenger : comparaison au modèle EN PRODUCTION, même jeu de test, même règle
+        # 4 bis. Champion / challenger : comparaison au modèle EN PRODUCTION, même jeu de test.
+        #        Comparaison LEXICOGRAPHIQUE : une erreur critique évitée suffit à préférer le candidat, même
+        #        si son rappel ou son F1 baisse (tant que le quality gate, vérifié avant, est respecté).
+        #        C'est la hiérarchie voulue des objectifs, pas une amélioration sur toutes les dimensions.
         dossier_production = Path(args.production or Path(args.sortie) / "production")
         comparaison = None
         if (dossier_production / FICHIER_ACTUELLE).exists():
@@ -273,6 +278,15 @@ def main():
             classes_production = champion.predict(test.drop(columns=[CIBLE]))["classe"].to_numpy()
             resultats_production = mesurer(y_test, classes_production)
             comparaison = comparer_au_modele_en_production(resultats, resultats_production)
+            # Le champion applique SA règle sauvegardée, le candidat celle du fichier fourni : si elles
+            # diffèrent, on compare deux systèmes de décision complets (légitime, mais tracé et dit)
+            regle_champion = champion.unwrap_python_model().composants["regle"]
+            comparaison["meme_regle"] = regle_champion == regle
+            if not comparaison["meme_regle"]:
+                comparaison["motif"] += (" Attention : règles de décision différentes (champion : sa "
+                                         "règle sauvegardée ; candidat : règle fournie) : comparaison de "
+                                         "deux systèmes de décision complets.")
+            mlflow.log_metric("meme_regle_que_production", int(comparaison["meme_regle"]))
             mlflow.log_metrics({f"production_{nom_mlflow(ligne['critere'])}": ligne["production"]
                                 for ligne in comparaison["criteres"]})
             mlflow.log_metric("meilleur_que_production", int(comparaison["meilleur"]))

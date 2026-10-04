@@ -9,11 +9,16 @@ Usage (depuis la racine du projet) :
     python scripts/suivi.py --base outputs/suivi_demo/journal_degrade.db   → alertes, code 2
     (ajouter --reference data/factice/entrainement.csv pour la dérive des données : PSI, KS)
 
+Deux populations, comme dans la réalité (le délai réel n'est connu que 6 à 12 mois après la prédiction) :
+- RÉCENTE (6 dernières semaines) : prédictions et avis des conseillers, AUCUNE situation observée encore ;
+- MÛRE (prédictions de 400 à 700 jours) : situations observées enregistrées RÉCEMMENT (60 derniers jours),
+  depuis le référentiel ou par saisie manuelle. C'est sur elle que se mesure la performance réelle.
+
 Scénario « dégradé » : erreurs du service, latence élevée, beaucoup d'accompagnements renforcés,
-conseillers souvent en désaccord, usagers de longue durée orientés en « retour rapide » (erreurs
-critiques), synthèses longues avec négations, dérive localisée sur les métiers du transport (âge),
-situations observées biaisées (classe 1 rarement recontactée), réentraînement en échec dont l'alias
-n'a pas été remis.
+conseillers souvent en désaccord, synthèses longues avec négations, dérive localisée sur les métiers du
+transport (âge) ; dans la cohorte mûre, usagers de longue durée orientés en « retour rapide » (erreurs
+critiques) et classe 1 rarement recontactée (risque de biais des étiquettes) ; réentraînement en échec
+dont l'alias n'a pas été remis.
 """
 
 import argparse
@@ -46,12 +51,31 @@ def profils_factices():
     return entrainement[COLONNES].to_dict("records")
 
 
-def remplir(journal, scenario, maintenant, graine=0, profils=None, nombre=3200, jours=42):
-    """Remplit `journal` avec `nombre` prédictions sur les `jours` derniers jours (6 semaines par défaut :
-    assez d'usagers par semaine et par métier pour le suivi segmenté, comme le M6)."""
+def entrees_factices(alea, profils):
+    if profils:
+        profil = alea.choice(profils)
+        return {c: (None if isinstance(profil[c], float) and profil[c] != profil[c] else profil[c])
+                for c in COLONNES}                                              # NaN du CSV → None
+    return {"age": alea.randint(18, 64), "niveau_diplome": "Bac", "anciennete_poste_ans": 2.0,
+            "code_rome_vise": "M1607", "synthese_entretien": SYNTHESE_COURTE}
+
+
+def sorties_factices(alea, classe):
+    garde_fou = classe == 1 and alea.random() < 0.15
+    return {"classe": classe, "recommandation": RECOMMANDATIONS[classe],
+            "explication": {"regle": {"motif": "garde_fou" if garde_fou else "plus_probable_0_1"}}}
+
+
+def remplir(journal, scenario, maintenant, graine=0, profils=None, nombre=4200, jours=42, nombre_mures=900):
+    """Remplit `journal` : `nombre` prédictions RÉCENTES sur les `jours` derniers jours (6 semaines par
+    défaut : assez d'usagers par semaine et par métier pour le suivi segmenté, comme le M6), sans
+    situation observée ; puis `nombre_mures` prédictions ANCIENNES (400 à 700 jours) dont les situations
+    observées sont enregistrées dans les 60 derniers jours."""
     alea = random.Random(graine)
     degrade = scenario == "degrade"
     poids_classes = [0.2, 0.2, 0.6] if degrade else [0.27, 0.52, 0.21]
+
+    # 1. Population récente : service, prédictions, avis des conseillers, dérive des données
     for i in range(nombre):
         id_prediction = f"FACTICE-{scenario}-{i:04d}"
         anciennete_jours = alea.uniform(0, jours)
@@ -64,16 +88,7 @@ def remplir(journal, scenario, maintenant, graine=0, profils=None, nombre=3200, 
                                           erreurs_validation=[{"champ": ["age"], "type": "factice"}])
             continue
         classe = alea.choices([0, 1, 2], poids_classes)[0]
-        garde_fou = classe == 1 and alea.random() < 0.15
-        sorties = {"classe": classe, "recommandation": RECOMMANDATIONS[classe],
-                   "explication": {"regle": {"motif": "garde_fou" if garde_fou else "plus_probable_0_1"}}}
-        if profils:
-            profil = alea.choice(profils)
-            entrees = {c: (None if isinstance(profil[c], float) and profil[c] != profil[c] else profil[c])
-                       for c in COLONNES}                                       # NaN du CSV → None
-        else:
-            entrees = {"age": alea.randint(18, 64), "niveau_diplome": "Bac", "anciennete_poste_ans": 2.0,
-                       "code_rome_vise": "M1607", "synthese_entretien": SYNTHESE_COURTE}
+        entrees = entrees_factices(alea, profils)
         if degrade:                              # synthèses longues partout (dérive GLOBALE)
             entrees["synthese_entretien"] = SYNTHESE_LONGUE
             # Dérive LOCALISÉE : métiers du transport (N), 3 dernières semaines, population plus âgée.
@@ -81,29 +96,37 @@ def remplir(journal, scenario, maintenant, graine=0, profils=None, nombre=3200, 
             if str(entrees.get("code_rome_vise") or "").upper().startswith("N") and anciennete_jours < 21:
                 entrees["age"] = min(70, (entrees["age"] or 40) + 20)
         duree = alea.uniform(600, 1200) if degrade else alea.uniform(12, 30)
-        journal.enregistrer_inference(id_prediction, date, None, "ok", entrees=entrees, sorties=sorties,
-                                      version_modele="factice-1", duree_ms=round(duree, 2),
-                                      id_usager=f"FACTICE-{i:04d}")
-
-        # Avis du conseiller (environ une prédiction sur deux)
-        if i % 2 == 0:
+        journal.enregistrer_inference(id_prediction, date, None, "ok", entrees=entrees,
+                                      sorties=sorties_factices(alea, classe), version_modele="factice-1",
+                                      duree_ms=round(duree, 2), id_usager=f"FACTICE-{i:04d}")
+        if i % 2 == 0:                           # avis du conseiller, au moment de l'entretien
             confirme = alea.random() < (0.5 if degrade else 0.85)
             if confirme:
                 journal.enregistrer_avis(id_prediction, date, "confirme", classe)
             else:
                 journal.enregistrer_avis(id_prediction, date, "corrige", (classe + 1) % 3, "Autre")
 
-        # Situation observée (plus tard), pour presque toutes les prédictions. Scénario dégradé : les
-        # usagers orientés en classe 1 ne sont presque jamais recontactés (biais des étiquettes)
-        if i % 6 != 5 and not (degrade and classe == 1 and alea.random() < 0.75):
-            if degrade and classe == 0:
-                reelle = 2                       # longue durée orientée « retour rapide » : erreur critique
-            elif alea.random() < 0.85:
-                reelle = classe
-            else:
-                reelle = 1                       # écart modéré (jamais 2 → 0 dans le scénario sain)
-            source = "référentiel" if i % 4 else "saisie manuelle"
-            journal.enregistrer_feedback(id_prediction, date, reelle, f"source : {source}")
+    # 2. Cohorte mûre : prédictions d'il y a 400 à 700 jours, issues connues et saisies RÉCEMMENT
+    for i in range(nombre_mures):
+        id_prediction = f"FACTICE-{scenario}-M{i:04d}"
+        date = (maintenant - timedelta(days=alea.uniform(400, 700))).isoformat(timespec="milliseconds")
+        classe = alea.choices([0, 1, 2], poids_classes)[0]
+        entrees = entrees_factices(alea, profils)
+        journal.enregistrer_inference(id_prediction, date, None, "ok", entrees=entrees,
+                                      sorties=sorties_factices(alea, classe), version_modele="factice-0",
+                                      duree_ms=round(alea.uniform(12, 30), 2), id_usager=f"FACTICE-M{i:04d}")
+        # Scénario dégradé : les usagers orientés en classe 1 ne sont presque jamais recontactés
+        if i % 6 == 5 or (degrade and classe == 1 and alea.random() < 0.75):
+            continue
+        if degrade and classe == 0:
+            reelle = 2                           # longue durée orientée « retour rapide » : erreur critique
+        elif alea.random() < 0.85:
+            reelle = classe
+        else:
+            reelle = 1                           # écart modéré (jamais 2 → 0 dans le scénario sain)
+        source = "référentiel" if i % 4 else "saisie manuelle"
+        saisie = (maintenant - timedelta(days=alea.uniform(0, 60))).isoformat(timespec="milliseconds")
+        journal.enregistrer_feedback(id_prediction, saisie, reelle, f"source : {source}")
 
     debut = (maintenant - timedelta(days=2)).isoformat(timespec="milliseconds")
     if degrade:
@@ -117,18 +140,21 @@ def remplir(journal, scenario, maintenant, graine=0, profils=None, nombre=3200, 
                                            "factice-1", "factice-2", resultats={"resultats_test": {}})
 
 
+def ancrage_semaine(maintenant):
+    """Fin de la semaine précédente : les prédictions remplissent des semaines COMPLÈTES, toujours
+    découpées de la même façon, quel que soit le jour du lancement (démonstration et tests
+    reproductibles ; la dernière semaine complète est celle qui déclenche les alertes localisées)."""
+    debut_de_semaine = (maintenant - timedelta(days=maintenant.weekday())).replace(hour=0, minute=0,
+                                                                                    second=0, microsecond=0)
+    return debut_de_semaine - timedelta(seconds=1)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--sortie", default=str(RACINE / "outputs" / "suivi_demo"))
     args = parser.parse_args()
-    # Ancrage sur le début de la semaine en cours : les prédictions remplissent les semaines PASSÉES,
-    # toujours découpées de la même façon, quel que soit le jour du lancement (démonstration et tests
-    # reproductibles ; la dernière semaine complète est celle qui déclenche les alertes localisées)
-    maintenant = datetime.now(timezone.utc)
-    debut_de_semaine = (maintenant - timedelta(days=maintenant.weekday())).replace(hour=0, minute=0,
-                                                                                    second=0, microsecond=0)
-    ancrage = debut_de_semaine - timedelta(seconds=1)
+    ancrage = ancrage_semaine(datetime.now(timezone.utc))
     profils = profils_factices()
     for scenario in ("sain", "degrade"):
         chemin = Path(args.sortie) / f"journal_{scenario}.db"

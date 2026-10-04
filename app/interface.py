@@ -32,6 +32,7 @@ from presentation import (
     date_locale,
     episode_de_la_prediction,
     filtrer,
+    format_valeur,
     lecture_explication,
     libelle_metier,
     premier_entretien_valide,
@@ -41,6 +42,7 @@ from presentation import (
     situation_observee,
     texte_regle,
     usager_pour_api,
+    variable_par_defaut,
 )
 
 DOSSIER = Path(__file__).resolve().parent
@@ -593,8 +595,9 @@ def page_suivi():
     st.title("Suivi du modèle")
     html('<div class="sous-titre">Le modèle vieillit-il ? Service, dérive des données, performance réelle, '
          'réentraînements.</div>')
-    info("Réservé à l'équipe data (en production : accès par rôle). Rapport produit chaque jour par "
-         "<b>scripts/suivi.py</b>, à côté du journal et des données d'entraînement.")
+    info("Réservé à l'équipe data (en production : accès par rôle). Rapport produit par "
+         "<b>scripts/suivi.py</b>, lancé à la main dans le prototype ; en production, il serait planifié "
+         "chaque jour (planification non configurée ici).")
     try:
         rapport = client.suivi()
     except client.ErreurAPI as erreur:
@@ -605,8 +608,11 @@ def page_suivi():
                    "data/raw/dataset_trajectoire_emploi.csv ».")
         return
     indicateurs = rapport["indicateurs"]
-    html(f'<p class="aide-saisie">Rapport du {date_locale(rapport["date"], avec_a=True)} · '
-         f'{rapport["periode"]["jours"]} derniers jours</p>')
+    periode = rapport["periode"]
+    html(f'<p class="aide-saisie">Rapport du {date_locale(rapport["date"], avec_a=True)} · service et '
+         f'dérive : {periode["jours"]} derniers jours · situations observées enregistrées sur '
+         f'{periode.get("etiquettes_jours", "—")} jours (le délai réel n\'est connu que 6 à 12 mois après '
+         f'la prédiction)</p>')
 
     # Indicateurs clés
     service, accord = indicateurs["service"], indicateurs["accord_conseillers"]
@@ -621,12 +627,22 @@ def page_suivi():
     # Alertes
     alertes = alertes_triees(rapport)
     st.subheader(f"Alertes ({len(alertes)})")
+    non_evaluables = rapport.get("non_evaluables") or []
     if not alertes:
-        st.success("Rien à signaler sur la période.")
+        if non_evaluables:
+            st.info("Aucune alerte détectée — certains indicateurs ne sont pas évaluables (trop peu de "
+                    "données) : l'absence d'alerte ne veut pas dire que tout va bien.")
+        else:
+            st.success("Aucune alerte détectée : tous les indicateurs ont pu être évalués.")
     for alerte in alertes:
         ton = "ambre" if alerte["niveau"] == "critique" else "bleu"
         html(f'<p>{badge(alerte["niveau"].capitalize(), ton)} <b>{escape(alerte["indicateur"])}</b> — '
              f'{escape(alerte["message"])}</p>')
+    if non_evaluables:
+        st.markdown(f"**Indicateurs non évaluables ({len(non_evaluables)})**")
+        for element in non_evaluables:
+            html(f'<p>{badge("Non évaluable", "gris")} <b>{escape(element["indicateur"])}</b> — '
+                 f'{escape(element["raison"])}</p>')
 
     # Dérive des données (PSI, KS), comme le tableau de bord du module M6
     lignes = rapport.get("derive_par_semaine") or []
@@ -635,40 +651,62 @@ def page_suivi():
     if "statut" in derive:
         st.info(f"Dérive {derive['statut']}.")
     else:
-        st.dataframe(pd.DataFrame([{"Variable": NOMS_VARIABLES.get(v, v), "PSI": r.get("psi"),
-                                    "Dérive": r.get("derive", r.get("statut")),
-                                    "KS (p-valeur)": r.get("ks_p_valeur")} for v, r in derive.items()]),
+        def manquants(r):
+            if r.get("taux_manquant") is None:
+                return "—"
+            return f"{r.get('taux_manquant_reference') or 0:.0%} → {r['taux_manquant']:.0%}"
+
+        st.dataframe(pd.DataFrame([{"Variable": NOMS_VARIABLES.get(v, v), "PSI": format_valeur(r.get("psi")),
+                                    "Dérive": r.get("derive") or r.get("statut") or "—",
+                                    "KS (p-valeur)": format_valeur(r.get("ks_p_valeur"), 3),
+                                    "Non renseignés (entraînement → récent)": manquants(r)}
+                                   for v, r in derive.items()]),
                      hide_index=True, width="stretch")
         html('<p class="aide-saisie">PSI : &lt; 0,10 stable ; 0,10 à 0,25 dérive modérée ; ≥ 0,25 dérive '
-             'forte (alerte). Le KS indique la significativité ; c\'est le PSI (ampleur de l\'écart) qui '
-             'décide.</p>')
+             'forte (alerte). Le KS indique la significativité (approximative avec des valeurs ex æquo) ; '
+             'c\'est le PSI (ampleur de l\'écart) qui décide. « — » : non calculé. Une dérive est un signal '
+             'à investiguer, pas une preuve de perte de performance.</p>')
     if lignes:
         st.markdown("**Variables en dérive par semaine (niveau global)**")
-        st.bar_chart(semaines_en_derive(lignes), color="#000091")
+        st.bar_chart(semaines_en_derive(lignes), stack=True)
         st.markdown("**Carte de chaleur des écarts par métier (PSI, semaine par semaine)**")
         variables = sorted({ligne["variable"] for ligne in lignes}, key=lambda v: NOMS_VARIABLES.get(v, v))
-        variable = st.selectbox("Variable", variables, format_func=lambda v: NOMS_VARIABLES.get(v, v),
-                                key="suivi_variable")
+        defaut = variable_par_defaut(rapport, variables)
+        variable = st.selectbox("Variable", variables, index=variables.index(defaut),
+                                format_func=lambda v: NOMS_VARIABLES.get(v, v), key="suivi_variable")
         carte, styles = carte_par_metier(lignes, variable)
         if carte.empty:
             st.info("Pas assez d'usagers par métier et par semaine pour cette variable.")
         else:
             st.dataframe(carte.style.apply(lambda _: styles, axis=None).format("{:.2f}", na_rep="—"),
                          width="stretch")
-            html('<p class="aide-saisie">Rouge : dérive retenue (PSI ≥ 0,35 ET KS significatif) ; orangé : '
-                 'PSI ≥ 0,10, à surveiller ; « — » : moins de 50 usagers dans la cellule. Un écart localisé '
-                 'sur un métier peut disparaître dans la moyenne globale.</p>')
+            html('<p class="aide-saisie">Chaque métier est comparé au MÊME métier dans l\'entraînement. '
+                 'Rouge : dérive retenue (PSI ≥ 0,35 ET KS significatif) ; orangé : PSI ≥ 0,10, à '
+                 'surveiller ; « — » : moins de 50 usagers dans la cellule. Un écart localisé sur un métier '
+                 'peut disparaître dans la moyenne globale. Seule la dernière semaine déclenche une '
+                 'alerte.</p>')
 
     # Étiquettes et réentraînements
     st.subheader("Situations observées et réentraînements")
     gauche, droite = st.columns(2)
     with gauche:
-        st.markdown(f"**{performance['situations_observees']} situations observées**")
+        st.markdown(f"**{performance['situations_observees']} situations observées** enregistrées sur "
+                    f"{periode.get('etiquettes_jours', '—')} jours")
         for source, nombre in (performance.get("par_source") or {}).items():
             st.markdown(f"- {escape(source)} : {nombre}")
-        couverture = performance.get("couverture_par_classe_predite") or {}
-        st.markdown("Part des prédictions ayant reçu une situation observée : " + " · ".join(
-            f"{CLASSES[int(c)]['court']} {pourcentage(v)}" for c, v in couverture.items()))
+        mesures = [f"{nom} {pourcentage(performance[nom])}"
+                   for nom in ("Erreurs critiques (2→0)", "Rappel classe 2") if nom in performance]
+        if "F1 macro" in performance:
+            mesures.append(f"F1 macro {format_valeur(performance['F1 macro'], 3)}")
+        if mesures:
+            st.markdown("Performance réelle : " + " · ".join(mesures) + " (« — » : non évaluable)")
+        cohortes = performance.get("cohortes_mures") or {}
+        couverture = cohortes.get("couverture_par_classe_predite") or {}
+        if couverture:
+            debut_mur, fin_mur = periode["cohortes_mures_jours"]
+            st.markdown(f"Cohortes mûres (prédictions de {debut_mur} à {fin_mur} jours) — "
+                        "part ayant reçu une situation observée : " + " · ".join(
+                            f"{CLASSES[int(c)]['court']} {pourcentage(v)}" for c, v in couverture.items()))
     with droite:
         reentrainements = indicateurs["reentrainements"]
         st.markdown(f"**{reentrainements['nombre']} réentraînement(s)**")
@@ -711,7 +749,8 @@ La nationalité, la commune et le statut d'allocataire ne sont **pas** demandés
 
 **Suivi du modèle** (équipe data) : alertes du service, dérive des données par rapport à l'entraînement
 (PSI et test de Kolmogorov-Smirnov, semaine par semaine et par métier), performance réelle sur les
-situations observées, réentraînements. Rapport produit chaque jour par `scripts/suivi.py`.
+situations observées, réentraînements, et indicateurs non évaluables faute de données. Rapport produit par
+`scripts/suivi.py` (lancé à la main dans le prototype ; planification quotidienne prévue en production).
 
 **Prototype** : les données affichées sont fictives ; ne saisissez jamais de nom ni de coordonnées.
 """)

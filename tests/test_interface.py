@@ -124,8 +124,8 @@ def test_page_suivi_du_modele(interface, tmp_path, donnees_factices):
     generateur = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(generateur)
     journal = tmp_path / "journal_degrade.db"
-    generateur.remplir(Journal(journal), "degrade", datetime.now(timezone.utc),
-                       profils=generateur.profils_factices(), nombre=1600, jours=21)
+    generateur.remplir(Journal(journal), "degrade", generateur.ancrage_semaine(datetime.now(timezone.utc)),
+                       profils=generateur.profils_factices(), nombre=2100, jours=21, nombre_mures=400)
     entrainement, _ = decouper(charger_donnees(donnees_factices / "entrainement.csv"))
     seuils = json.loads((RACINE / "config" / "seuils_suivi.json").read_text(encoding="utf-8"))
     rapport = analyser(journal, seuils, reference=entrainement[generateur.COLONNES].to_dict("records"))
@@ -135,7 +135,11 @@ def test_page_suivi_du_modele(interface, tmp_path, donnees_factices):
     at.run()
     assert not at.exception
     affiche = texte(at)
-    assert "Alertes" in affiche and "registre MLflow" in affiche and "biais des étiquettes" in affiche
+    assert "Alertes" in affiche and "registre MLflow" in affiche
+    assert "risque de biais des étiquettes" in affiche
+    assert "Cohortes mûres" in affiche and "None" not in affiche
     assert len(at.dataframe) >= 2                                            # tableau PSI + carte par métier
-    at.selectbox(key="suivi_variable").set_value("age").run()
+    # La carte s'ouvre sur la variable de l'alerte « dérive localisée » (l'âge dans ce scénario)
+    assert at.selectbox(key="suivi_variable").value == "age"
+    at.selectbox(key="suivi_variable").set_value("anciennete_poste_ans").run()
     assert not at.exception
