@@ -7,7 +7,7 @@ Lancement (depuis la racine du projet, l'API tournant à côté) :
 
 import base64
 import time
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from html import escape
 from pathlib import Path
 
@@ -26,12 +26,15 @@ from presentation import (
     age_au,
     charger_referentiel,
     date_locale,
+    date_observation_demo,
     filtrer,
     lecture_explication,
     libelle_metier,
+    premier_entretien_valide,
     retour_conseiller,
     situation_depuis_referentiel,
     situation_observee,
+    texte_regle,
     usager_pour_api,
 )
 
@@ -40,6 +43,7 @@ LOGO = DOSSIER / "assets" / "logo_phare.png"
 INTRO = DOSSIER / "assets" / "intro_phare.gif"
 DUREE_INTRO_S = 7.2          # durée de l'animation (96 images × 75 ms) : jouée une seule fois
 LIGNES_PAR_PAGE = 10
+LIMITE_HISTORIQUE = 500       # l'historique filtre côté interface : seulement ces dernières analyses
 MAX_SYNTHESE = 250           # données d'entraînement : 63 à 77 caractères ; au-delà de ~3×, hors distribution
 REFERENTIEL = charger_referentiel()
 LIBELLES_CHAMPS = {"id_usager": "Identifiant usager", "age": "Âge", "niveau_diplome": "Niveau de diplôme",
@@ -252,31 +256,39 @@ def carte_resultat(sorties):
 
 
 def explication_resultat(sorties):
-    """Pourquoi cette recommandation ? Contributions SHAP regroupées par information saisie."""
+    """Pourquoi cette recommandation ? 1. la règle de décision ; 2. les facteurs du modèle (SHAP)."""
     st.subheader("Pourquoi cette recommandation ?")
-    lecture = lecture_explication(sorties.get("explication"))
+    explication = sorties.get("explication")
+    lecture = lecture_explication(explication)
     if lecture is None:
         html('<p class="aide-saisie">Explication indisponible : prédiction faite avant l\'ajout de '
              'l\'explicabilité.</p>')
         return
+    regle = texte_regle(explication.get("regle"))
+    if regle:
+        html(f'<p class="shap-regle"><b>Règle de décision</b> — {escape(regle)}</p>')
+
+    titre = CLASSES[explication["classe_expliquee"]]["titre"]
+    html(f'<p class="shap-titre"><b>Ce qui a pesé dans le score du modèle pour « {escape(titre)} »</b></p>')
     lignes = "".join(
         f'<div class="shap-ligne"><span class="shap-nom">{escape(ligne["facteur"])}</span>'
         f'<span class="shap-gauche">{barre(ligne, "contre")}</span>'
         f'<span class="shap-droite">{barre(ligne, "pour")}</span></div>' for ligne in lecture["lignes"])
     html('<div class="shap"><div class="shap-ligne shap-legende"><span></span>'
-         '<span class="shap-gauche">← éloigne de cette recommandation</span>'
-         f'<span class="shap-droite">rapproche de cette recommandation →</span></div>{lignes}</div>')
+         '<span class="shap-gauche">← diminue ce score</span>'
+         f'<span class="shap-droite">augmente ce score →</span></div>{lignes}</div>')
     mots = []
     if lecture["mots_pour"]:
-        mots.append("rapprochent : " + " ".join(badge(m, "bleu") for m in lecture["mots_pour"]))
+        mots.append("augmentent : " + " ".join(badge(m, "bleu") for m in lecture["mots_pour"]))
     if lecture["mots_contre"]:
-        mots.append("éloignent : " + " ".join(badge(m, "gris") for m in lecture["mots_contre"]))
+        mots.append("diminuent : " + " ".join(badge(m, "gris") for m in lecture["mots_contre"]))
     if mots:
-        html('<p class="shap-mots">Mots de la synthèse qui ont le plus pesé — ' + " &nbsp;·&nbsp; ".join(mots)
+        html('<p class="shap-mots">Repères dans la synthèse (indicatifs) — ' + " &nbsp;·&nbsp; ".join(mots)
              + "</p>")
-    html('<p class="shap-note">Méthode SHAP : part de chaque information dans le calcul du modèle, '
-         'pour cet usager. Elle décrit le fonctionnement du modèle, pas la cause de la situation de '
-         'l\'usager.</p>')
+    html('<p class="shap-note">Méthode SHAP : part de chaque information dans le score brut du modèle, '
+         'pour cet usager, avant recalibration et règle de décision. Les repères de la synthèse sont '
+         'approximatifs (fragments de caractères regroupés par mot) : seule la ligne « Synthèse » fait foi. '
+         'Cela décrit le calcul du modèle, pas la cause de la situation de l\'usager.</p>')
 
 
 def barre(ligne, sens):
@@ -323,13 +335,19 @@ def page_resultat():
     avis = courant.get("avis")
     if avis:
         libelle, ton = retour_conseiller({"avis_conseiller": avis})
-        html(f'<p class="discret">Votre appréciation : {badge(libelle, ton)}</p>')
+        quand = f" — le {date_locale(avis['date'], avec_a=True)}" if avis.get("date") else ""
+        html(f'<p class="discret">Appréciation du conseiller : {badge(libelle, ton)}{escape(quand)}</p>')
+        if avis.get("avis") == "corrige":
+            html(f'<p class="discret">Motif : {escape(avis.get("motif") or "—")}'
+                 + (f' · Précisions : {escape(avis["precisions"])}' if avis.get("precisions") else "")
+                 + "</p>")
     html('<div class="question">Cette estimation correspond-elle à votre appréciation ?</div>')
     _, confirmer, corriger, _ = st.columns([2, 1.5, 1.5, 2])
     if confirmer.button("Confirmer l'estimation", type="primary", width="stretch"):
         try:
             reponse = client.envoyer_avis(courant["id_prediction"], "confirme")
-            courant["avis"] = {"avis": "confirme", "classe_proposee": reponse["classe_proposee"]}
+            courant["avis"] = {"avis": "confirme", "classe_proposee": reponse["classe_proposee"],
+                               "date": datetime.now(timezone.utc).isoformat()}
             etat.message = ("ok", "Votre confirmation est enregistrée.")
         except client.ErreurAPI as erreur:
             etat.message = ("erreur", erreur.message)
@@ -370,19 +388,31 @@ def situation_observee_formulaire(courant):
 
     # 1. Voie normale : rapprochement avec le référentiel des usagers (dates d'inscription et de reprise)
     dossier = REFERENTIEL.get(courant.get("id_usager") or "")
-    if dossier:
+    if dossier and not premier_entretien_valide(dossier, courant["date"]):
+        html('<p class="aide-saisie">Cette analyse n\'a pas été faite au premier entretien (ou l\'a été '
+             'après une reprise d\'emploi) : la situation du référentiel ne peut pas lui être rattachée.</p>')
+    elif dossier:
+        observation = date_observation_demo()
+        html(f'<p class="aide-saisie">Démonstration : le référentiel fictif est lu à une date d\'observation '
+             f'<b>simulée</b>, le {observation.strftime("%d/%m/%Y")}.</p>')
         if st.button("Interroger le référentiel", key=f"referentiel_{cle}"):
-            etat[f"referentiel_{cle}_resultat"] = situation_depuis_referentiel(dossier)
+            try:
+                etat[f"referentiel_{cle}_resultat"] = situation_depuis_referentiel(dossier, observation)
+            except ValueError as erreur:
+                etat[f"referentiel_{cle}_resultat"] = str(erreur)
             etat[f"referentiel_{cle}_interroge"] = True
         if etat.get(f"referentiel_{cle}_interroge"):
             connue = etat.get(f"referentiel_{cle}_resultat")
             reprise = dossier.get("date_reprise_emploi")
-            if connue is None:
+            if isinstance(connue, str):
+                st.error(f"Référentiel : {connue} Rien n'est enregistré.")
+            elif connue is None:
                 info("Référentiel : pas encore de reprise d'emploi et moins de 12 mois depuis l'inscription. "
                      "La situation n'est pas encore connue : rien à enregistrer pour l'instant.")
             else:
-                detail = (f"reprise d'emploi le {date_locale(reprise).split(' ·')[0]}" if reprise
-                          else "toujours en recherche plus de 12 mois après l'inscription")
+                constatee = reprise and date.fromisoformat(reprise) <= observation
+                detail = (f"reprise d'emploi le {date.fromisoformat(reprise).strftime('%d/%m/%Y')}"
+                          if constatee else "toujours en recherche plus de 12 mois après l'inscription")
                 html(f'<p>Référentiel : {escape(detail)} → {badge(CLASSES[connue]["court"], "vert")}</p>')
                 if st.button("Enregistrer la situation du référentiel", type="primary",
                              key=f"enreg_ref_{cle}"):
@@ -440,10 +470,13 @@ def page_appreciation():
         try:
             if proposee == classe_predite:
                 client.envoyer_avis(courant["id_prediction"], "confirme")
-                courant["avis"] = {"avis": "confirme", "classe_proposee": classe_predite}
+                courant["avis"] = {"avis": "confirme", "classe_proposee": classe_predite,
+                                   "date": datetime.now(timezone.utc).isoformat()}
             else:
                 client.envoyer_avis(courant["id_prediction"], "corrige", proposee, motif, precisions)
-                courant["avis"] = {"avis": "corrige", "classe_proposee": proposee}
+                courant["avis"] = {"avis": "corrige", "classe_proposee": proposee, "motif": motif,
+                                   "precisions": (precisions or "").strip() or None,
+                                   "date": datetime.now(timezone.utc).isoformat()}
             etat.message = ("ok", "Votre appréciation est enregistrée.")
         except client.ErreurAPI as erreur:
             etat.message = ("erreur", erreur.message)
@@ -477,7 +510,7 @@ def page_historique():
     bouton.button("＋ Nouvelle analyse", type="primary", on_click=nouvelle_analyse, width="stretch")
     afficher_message()
     try:
-        historique = client.historique()
+        historique = client.historique(LIMITE_HISTORIQUE)
     except client.ErreurAPI as erreur:
         st.error(erreur.message)
         return
@@ -493,7 +526,9 @@ def page_historique():
     lignes = filtrer(historique, identifiant, periode, classe, statut)
 
     gauche, droite = st.columns([4, 1])
-    gauche.markdown(f"**{len(lignes)} analyse{'s' if len(lignes) > 1 else ''}**")
+    gauche.markdown(f"**{len(lignes)} analyse{'s' if len(lignes) > 1 else ''}** "
+                    f"<span class='aide-saisie'>(recherche parmi les {LIMITE_HISTORIQUE} dernières)</span>",
+                    unsafe_allow_html=True)
     with droite.container(key="lien_filtres"):
         st.button("Réinitialiser les filtres", on_click=reinitialiser_filtres)
 

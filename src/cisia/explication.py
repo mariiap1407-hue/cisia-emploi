@@ -3,15 +3,20 @@
 Méthode : valeurs de SHAP exactes pour les arbres (TreeSHAP), calculées par LightGBM lui-même
 (`pred_contrib=True`) : pas de dépendance en plus, ni dans l'image Docker.
 
-Pour un usager et une classe, chaque variable reçoit une contribution au score brut du modèle
-(en log-odds). Propriété d'additivité : valeur de base + somme des contributions = score brut.
-Une contribution positive rapproche l'usager de la classe expliquée, une contribution négative l'en éloigne.
+Pour un usager et une classe, chaque variable reçoit une contribution au SCORE BRUT du modèle pour
+cette classe (logit multiclasse, avant le softmax). Propriété d'additivité : valeur de base + somme des
+contributions = score brut. Une contribution positive augmente ce score, une contribution négative le diminue.
+
+Ce que SHAP n'explique PAS : la recalibration du risque et la règle de décision (seuil de la classe 2,
+garde-fou de la classe 0). Elles sont décrites à part (decision_de_la_regle) : quand le garde-fou relève
+une classe 0 en classe 1, c'est la règle qui décide, pas le score de la classe 1.
 
 Lecture pour le conseiller :
 - les contributions des variables sont regroupées par information saisie (âge, ancienneté, diplôme,
   métier visé, synthèse) : le TF-IDF compte des milliers de colonnes, illisibles une à une ;
 - pour la synthèse, les contributions des groupes de caractères PRÉSENTS dans le texte sont réparties
-  entre les mots qui les contiennent : on obtient les mots qui ont le plus pesé.
+  entre les mots qui les contiennent : des REPÈRES INDICATIFS (approximation d'affichage, pas un calcul
+  SHAP par mot ; leur somme ne reconstitue pas le total « synthèse », qui seul fait foi).
 
 Limite : SHAP décrit le fonctionnement du modèle, pas une cause dans la vie de l'usager.
 """
@@ -41,7 +46,8 @@ def groupe(nom_colonne):
 
 
 def contributions(modele, X):
-    """Contributions SHAP au score brut : tableau (usagers, classes, colonnes + 1) et noms des colonnes.
+    """Contributions SHAP au score brut (logit multiclasse) : tableau (usagers, classes, colonnes + 1)
+    et noms des colonnes.
 
     La dernière valeur de chaque ligne est la valeur de base (score moyen du modèle).
     """
@@ -136,7 +142,7 @@ def expliquer_lot(modele, X, classes):
 
 
 def importance_globale(modele, X, classe=2):
-    """Importance moyenne (moyenne des |contributions|) de chaque information, pour une classe.
+    """Importance moyenne (moyenne des |contributions| au score brut) de chaque information, pour une classe.
 
     Sert au notebook et à l'analyse éthique : sur quoi le modèle s'appuie-t-il en général ?
     """
@@ -144,3 +150,26 @@ def importance_globale(modele, X, classe=2):
     importance = {g: float(np.abs(contribs[:, classe, js].sum(axis=1)).mean())
                   for g, js in indices_par_groupe(noms).items()}
     return dict(sorted(importance.items(), key=lambda paire: -paire[1]))
+
+
+def decision_de_la_regle(probas, risque, classe, regle):
+    """Comment la règle de décision a choisi la classe : ce que les contributions SHAP n'expliquent pas.
+
+    probas : probabilités brutes des 3 classes ; risque : risque recalibré de la classe 2.
+    motif : « seuil_classe_2 » (risque >= seuil), « garde_fou » (classe 0 relevée en classe 1),
+    « plus_probable_0_1 » (la plus probable entre 0 et 1, risque sous le seuil) ou « plus_probable ».
+    """
+    seuil_2, garde_fou = regle.get("seuil_classe_2"), regle.get("seuil_garde_fou_classe_0")
+    probas = np.asarray(probas)
+    # Classe candidate AVANT le garde-fou, calculée comme dans appliquer_regle()
+    candidate = 2 if seuil_2 is not None and risque >= seuil_2 else \
+        int(np.argmax(probas[:2])) if seuil_2 is not None else int(np.argmax(probas))
+    if classe == 1 and candidate == 0 and garde_fou is not None and risque >= garde_fou:
+        motif = "garde_fou"
+    elif seuil_2 is None:
+        motif = "plus_probable"
+    else:
+        motif = "seuil_classe_2" if classe == 2 else "plus_probable_0_1"
+    return {"motif": motif, "classe_la_plus_probable": int(np.argmax(probas)),
+            "risque_recalibre": round(float(risque), 4), "seuil_classe_2": seuil_2,
+            "seuil_garde_fou": garde_fou}

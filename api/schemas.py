@@ -56,25 +56,39 @@ class DemandePrediction(BaseModel):
 
 class Facteur(BaseModel):
     facteur: str = Field(description="Information saisie (âge, diplôme, ancienneté, métier, synthèse)")
-    contribution: float = Field(description="Contribution SHAP au score de la classe retenue (log-odds) : "
-                                            "positive = rapproche de cette classe, négative = en éloigne")
+    contribution: float = Field(description="Contribution SHAP au score brut de la classe retenue (logit "
+                                            "multiclasse) : positive = augmente ce score, "
+                                            "négative = le diminue")
 
 
 class Mot(BaseModel):
+    """Repère indicatif : contributions des fragments de caractères réparties entre les mots (approximé)."""
     mot: str
     contribution: float
 
 
-class Explication(BaseModel):
-    """Pourquoi cette classe ? Contributions SHAP exactes (TreeSHAP, calculées par LightGBM).
+class DecisionRegle(BaseModel):
+    """Ce que SHAP n'explique pas : la règle de décision appliquée au risque recalibré."""
+    motif: Literal["seuil_classe_2", "garde_fou", "plus_probable_0_1", "plus_probable"]
+    classe_la_plus_probable: int = Field(description="Classe la plus probable du modèle (avant la règle)")
+    risque_recalibre: float
+    seuil_classe_2: float | None
+    seuil_garde_fou: float | None
 
-    Valeur de base + somme des contributions des facteurs = score brut du modèle pour la classe retenue.
+
+class Explication(BaseModel):
+    """Pourquoi cette classe ? Deux parties distinctes.
+
+    1. facteurs : contributions SHAP exactes (TreeSHAP, calculées par LightGBM) au score brut de la classe
+       retenue ; valeur de base + somme des contributions = score brut. N'explique pas la règle de décision.
+    2. regle : comment la règle (seuil de la classe 2, garde-fou) a choisi la classe à partir du risque.
     Décrit le fonctionnement du modèle, pas une cause dans la situation de l'usager.
     """
     classe_expliquee: int
     valeur_de_base: float
     facteurs: list[Facteur]
-    mots: list[Mot] = Field(description="Mots de la synthèse qui ont le plus pesé")
+    mots: list[Mot] = Field(description="Repères indicatifs dans la synthèse (pas un SHAP par mot)")
+    regle: DecisionRegle | None = None
 
 
 class Prediction(BaseModel):

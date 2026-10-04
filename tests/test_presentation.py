@@ -2,20 +2,26 @@
 
 from datetime import date, datetime, timezone
 
+import pytest
+
 from app.presentation import (
     AGES,
     ANCIENNETES,
     DIPLOMES,
     age_au,
+    ajouter_mois,
     charger_referentiel,
     date_locale,
+    date_observation_demo,
     filtrer,
     lecture_explication,
     libelle_metier,
     libelle_rome,
+    premier_entretien_valide,
     retour_conseiller,
     situation_depuis_referentiel,
     situation_observee,
+    texte_regle,
     usager_pour_api,
 )
 
@@ -80,28 +86,68 @@ def test_age_calcule_depuis_la_date_de_naissance():
     assert age_au("1990-10-04", date(2026, 10, 4)) == 36
 
 
-def test_situation_depuis_referentiel():
-    jour = date(2026, 10, 4)
+def test_ajouter_mois():
+    assert ajouter_mois(date(2026, 1, 1), 6) == date(2026, 7, 1)
+    assert ajouter_mois(date(2026, 8, 31), 6) == date(2027, 2, 28)       # fin de mois
+    assert ajouter_mois(date(2026, 1, 15), 12) == date(2027, 1, 15)
 
-    def dossier(inscription, reprise=None):
-        return {"date_inscription": inscription, "date_reprise_emploi": reprise}
 
-    assert situation_depuis_referentiel(dossier("2026-01-01", "2026-05-01"), jour) == 0    # 4 mois
-    assert situation_depuis_referentiel(dossier("2025-01-01", "2025-10-01"), jour) == 1    # 9 mois
-    assert situation_depuis_referentiel(dossier("2024-01-01", "2025-06-01"), jour) == 2    # 17 mois
-    assert situation_depuis_referentiel(dossier("2025-03-01"), jour) == 2               # 19 mois sans reprise
-    assert situation_depuis_referentiel(dossier("2026-06-01"), jour) is None               # pas encore connue
+def test_situation_depuis_referentiel_en_mois_calendaires():
+    jour = date(2027, 6, 1)
+
+    def classe(reprise, inscription="2026-01-01", jour=jour):
+        return situation_depuis_referentiel({"date_inscription": inscription, "date_reprise_emploi": reprise},
+                                            jour)
+
+    # Bornes exactes (relecture B9) : 6 mois pile → classe 1 ; 12 mois pile → classe 1 ; au-delà → 2
+    assert classe("2026-06-30") == 0
+    assert classe("2026-07-01") == 1
+    assert classe("2027-01-01") == 1
+    assert classe("2027-01-02") == 2
+    # Sans reprise : en recherche depuis plus de 12 mois → 2 ; sinon pas encore connue
+    assert classe(None) == 2
+    assert classe(None, jour=date(2026, 12, 31)) is None
+    # Reprise FUTURE à la date d'observation : pas encore constatée
+    assert classe("2027-02-01", jour=date(2026, 10, 4)) is None
+    # Dates incohérentes refusées
+    with pytest.raises(ValueError):
+        classe("2025-12-01")
+
+
+def test_premier_entretien_et_chronologie():
+    dossier = {"date_inscription": "2026-10-01", "date_reprise_emploi": "2026-12-15"}
+    assert premier_entretien_valide(dossier, "2026-10-04T09:00:00+00:00")
+    assert not premier_entretien_valide(dossier, "2026-12-20T09:00:00+00:00")     # après la reprise
+    assert not premier_entretien_valide(dossier, "2026-09-20T09:00:00+00:00")     # avant l'inscription
+    assert not premier_entretien_valide({**dossier, "date_reprise_emploi": None},
+                                        "2026-11-15T09:00:00+00:00")             # hors premier entretien
 
 
 def test_referentiel_fictif_compatible_avec_le_formulaire():
-    referentiel = charger_referentiel()
+    jour = date(2026, 10, 4)
+    referentiel = charger_referentiel(jour=jour)
     assert len(referentiel) == 20
+    observees = set()
     for identifiant, dossier in referentiel.items():
         assert dossier["id_usager"] == identifiant
-        assert age_au(dossier["date_naissance"], date(2026, 10, 4)) in AGES
+        assert age_au(dossier["date_naissance"], jour) in AGES
         assert (dossier["niveau_diplome"] or "Non renseigné") in DIPLOMES
         assert dossier["anciennete_poste_ans"] is None or dossier["anciennete_poste_ans"] in ANCIENNETES
         assert "code_rome_vise" not in dossier          # le métier visé se décide pendant l'entretien
+        # Chronologie : tous les dossiers sont au premier entretien aujourd'hui, sans reprise passée
+        assert premier_entretien_valide(dossier, f"{jour.isoformat()}T09:00:00+00:00")
+        observees.add(situation_depuis_referentiel(dossier, date_observation_demo(jour)))
+    assert observees == {0, 1, 2}                       # la démonstration couvre les trois issues
+
+
+def test_texte_de_la_regle():
+    regle = {"motif": "garde_fou", "classe_la_plus_probable": 0, "risque_recalibre": 0.1016,
+             "seuil_classe_2": 0.25, "seuil_garde_fou": 0.08}
+    assert "garde-fou de 8%" in texte_regle(regle) and "10%" in texte_regle(regle)
+    assert "seuil de 25%" in texte_regle({**regle, "motif": "seuil_classe_2", "risque_recalibre": 0.4})
+    assert "Avant recalibration" in texte_regle({**regle, "motif": "plus_probable_0_1",
+                                                 "classe_la_plus_probable": 2})
+    assert texte_regle(None) is None
 
 
 def test_lecture_de_l_explication():

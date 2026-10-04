@@ -65,7 +65,8 @@ def test_historique_avec_avis_et_situation_observee(tmp_path):
 
     p2, p1 = journal.historique()
     assert p1["id_usager"] == "DE-0248" and remplace is True
-    assert p1["avis_conseiller"] == {"avis": "corrige", "classe_proposee": 1, "motif": "Autre", "date": "d2"}
+    assert p1["avis_conseiller"] == {"avis": "corrige", "classe_proposee": 1, "motif": "Autre",
+                                     "precisions": "précisions", "date": "d2"}   # précisions relisibles
     assert p1["situation_observee"] == {"classe_reelle": 1, "date": "d3"}
     assert p2["avis_conseiller"] is None and p2["situation_observee"] is None
     # L'avis du conseiller n'entre jamais dans les données de réentraînement : seuls les feedbacks y vont

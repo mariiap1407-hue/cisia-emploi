@@ -6,7 +6,7 @@ Contrôles :
 1. attente active sur /health (délai maximal par requête, nombre d'essais limité) jusqu'au code 200 ;
 2. si --version est donnée : la version servie doit être exactement celle-là (bon modèle déployé) ;
 3. /predict avec la clé : code 200, champs attendus, même version que --version, classe dans {0, 1, 2},
-   risque fini entre 0 et 1 ;
+   risque fini entre 0 et 1, explication de la classe retenue (facteurs SHAP et règle de décision) ;
 4. /predict sans clé : code 401 ;
 5. si --retrain est donné : code attendu de /retrain (503 dans une image sans données).
 
@@ -25,7 +25,7 @@ import urllib.request
 USAGER = {"age": 35, "niveau_diplome": "Bac", "anciennete_poste_ans": 4.5, "code_rome_vise": "M1607",
           "synthese_entretien": "Projet clair, mobilité possible."}
 CHAMPS_PREDICTION = {"id_prediction", "classe", "recommandation", "niveau_alerte", "risque_longue_duree",
-                     "risque_affiche", "version_modele"}
+                     "risque_affiche", "version_modele", "explication"}
 
 
 def appeler(methode, url, cle=None, corps=None, delai=10):
@@ -97,6 +97,10 @@ def main():
         echec(f"/predict : classe {prediction['classe']} hors de {{0, 1, 2}}")
     if not (isinstance(risque, (int, float)) and math.isfinite(risque) and 0 <= risque <= 1):
         echec(f"/predict : risque {risque} hors de [0, 1]")
+    explication = prediction["explication"] or {}
+    if explication.get("classe_expliquee") != prediction["classe"] or not explication.get("facteurs") \
+            or not explication.get("regle"):
+        echec("/predict : explication absente ou incohérente (classe expliquée, facteurs, règle)")
     print(f"Prédiction 200 : classe {prediction['classe']}, risque {risque}, "
           f"version {prediction['version_modele']}")
 

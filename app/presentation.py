@@ -4,6 +4,7 @@ Les libellés suivent l'ordre validé à l'étape 6 : délai estimé (classe) �
 niveau d'alerte → risque en %, au second plan.
 """
 
+import calendar
 import json
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -66,9 +67,34 @@ PERIODES = ["Tout", "Aujourd'hui", "7 derniers jours", "Ce mois-ci"]
 STATUTS_RETOUR = ["Tous les statuts", "À examiner", "Confirmée", "Corrigée"]
 
 
-def charger_referentiel(chemin=REFERENTIEL):
-    """Dossiers du référentiel FICTIF (démonstration), indexés par identifiant."""
-    return {d["id_usager"]: d for d in json.loads(Path(chemin).read_text(encoding="utf-8"))["dossiers"]}
+# Démonstration : les dates du référentiel fictif sont RELATIVES au jour de lancement (inscription il y a
+# quelques jours = premier entretien), et la situation observée est lue à une date SIMULÉE, 400 jours plus
+# tard : la chronologie reste cohérente (prédiction au premier entretien, issue connue ensuite).
+DECALAGE_OBSERVATION_JOURS = 400
+FENETRE_PREMIER_ENTRETIEN_JOURS = 31
+
+
+def date_observation_demo(jour=None):
+    return (jour or date.today()) + timedelta(days=DECALAGE_OBSERVATION_JOURS)
+
+
+def charger_referentiel(chemin=REFERENTIEL, jour=None):
+    """Dossiers du référentiel FICTIF (démonstration), indexés par identifiant, avec des dates réelles.
+
+    Dans le fichier : inscription_il_y_a_jours et reprise_apres_jours (null = pas de reprise connue).
+    """
+    jour = jour or date.today()
+    dossiers = {}
+    for brut in json.loads(Path(chemin).read_text(encoding="utf-8"))["dossiers"]:
+        inscription = jour - timedelta(days=brut["inscription_il_y_a_jours"])
+        reprise = None if brut["reprise_apres_jours"] is None else \
+            inscription + timedelta(days=brut["reprise_apres_jours"])
+        dossiers[brut["id_usager"]] = {
+            "id_usager": brut["id_usager"], "date_naissance": brut["date_naissance"],
+            "niveau_diplome": brut["niveau_diplome"], "anciennete_poste_ans": brut["anciennete_poste_ans"],
+            "date_inscription": inscription.isoformat(),
+            "date_reprise_emploi": reprise.isoformat() if reprise else None}
+    return dossiers
 
 
 def age_au(date_naissance, jour=None):
@@ -77,19 +103,42 @@ def age_au(date_naissance, jour=None):
     return jour.year - naissance.year - ((jour.month, jour.day) < (naissance.month, naissance.day))
 
 
-def situation_depuis_referentiel(dossier, jour=None):
-    """Classe OBSERVÉE d'après les dates du référentiel ; None si elle n'est pas encore connue.
+def ajouter_mois(jour, mois):
+    """Même jour, `mois` mois plus tard (fin de mois si le jour n'existe pas : 31/01 + 1 mois = 28/02)."""
+    total = jour.month - 1 + mois
+    annee, mois_cible = jour.year + total // 12, total % 12 + 1
+    return date(annee, mois_cible, min(jour.day, calendar.monthrange(annee, mois_cible)[1]))
 
-    Délai entre l'inscription et la reprise d'emploi : < 6 mois → 0 ; 6 à 12 mois → 1 ; > 12 mois → 2.
-    Sans reprise : toujours en recherche après 12 mois → 2 ; sinon, pas encore connue.
+
+def situation_depuis_referentiel(dossier, jour):
+    """Classe OBSERVÉE au jour `jour`, en mois calendaires ; None si elle n'est pas encore connue.
+
+    Reprise avant 6 mois → 0 ; de 6 à 12 mois inclus → 1 ; après 12 mois → 2.
+    Sans reprise connue à ce jour (ou reprise future) : toujours en recherche après 12 mois → 2 ;
+    sinon, pas encore connue. Des dates incohérentes (reprise avant l'inscription) lèvent ValueError.
     """
-    jour = jour or date.today()
     inscription = date.fromisoformat(dossier["date_inscription"])
     reprise = dossier.get("date_reprise_emploi")
-    if reprise:
-        mois = (date.fromisoformat(reprise) - inscription).days / 30.44
-        return 0 if mois < 6 else 1 if mois <= 12 else 2
-    return 2 if (jour - inscription).days / 30.44 > 12 else None
+    reprise = date.fromisoformat(reprise) if reprise else None
+    if reprise is not None and reprise < inscription:
+        raise ValueError("Dates incohérentes : reprise d'emploi avant l'inscription.")
+    six_mois, douze_mois = ajouter_mois(inscription, 6), ajouter_mois(inscription, 12)
+    if reprise is not None and reprise <= jour:                  # reprise déjà constatée
+        return 0 if reprise < six_mois else 1 if reprise <= douze_mois else 2
+    return 2 if jour > douze_mois else None
+
+
+def premier_entretien_valide(dossier, date_prediction):
+    """La prédiction a-t-elle été faite au premier entretien, avant toute reprise d'emploi ?
+
+    Sinon, la situation observée ne doit pas servir d'étiquette : l'issue était peut-être déjà connue.
+    """
+    inscription = date.fromisoformat(dossier["date_inscription"])
+    jour = datetime.fromisoformat(date_prediction).astimezone(FUSEAU).date()
+    reprise = dossier.get("date_reprise_emploi")
+    avant_reprise = reprise is None or jour < date.fromisoformat(reprise)
+    dans_la_fenetre = inscription <= jour <= inscription + timedelta(days=FENETRE_PREMIER_ENTRETIEN_JOURS)
+    return dans_la_fenetre and avant_reprise
 
 
 def libelle_metier(code):
@@ -135,6 +184,28 @@ def situation_observee(element):
     if not observee:
         return "Non connue", "gris"
     return CLASSES[observee["classe_reelle"]]["court"], "vert"
+
+
+def texte_regle(regle):
+    """Phrase qui dit comment la règle de décision a choisi l'estimation (ce que SHAP n'explique pas)."""
+    if not regle:
+        return None
+    risque = f"{regle['risque_recalibre']:.0%}"
+    if regle["motif"] == "seuil_classe_2":
+        return (f"Le risque estimé de longue durée ({risque}) atteint le seuil de "
+                f"{regle['seuil_classe_2']:.0%} : accompagnement renforcé.")
+    if regle["motif"] == "garde_fou":
+        return (f"Le modèle penchait pour un retour rapide, mais le risque estimé de longue durée ({risque}) "
+                f"atteint le garde-fou de {regle['seuil_garde_fou']:.0%} : l'estimation est relevée à "
+                "« délai moyen » par prudence.")
+    if regle["motif"] == "plus_probable_0_1":
+        texte = (f"Le risque estimé de longue durée ({risque}) reste sous le seuil de "
+                 f"{regle['seuil_classe_2']:.0%} : le modèle retient la plus probable entre retour rapide "
+                 "et délai moyen.")
+        if regle["classe_la_plus_probable"] == 2:
+            texte += " (Avant recalibration, « longue durée » était l'issue la plus probable.)"
+        return texte
+    return "Le modèle retient l'estimation la plus probable."
 
 
 def lecture_explication(explication, nombre_mots=4):

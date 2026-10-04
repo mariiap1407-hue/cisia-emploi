@@ -48,6 +48,7 @@ h1, h2, h3 { color: var(--texte) !important; letter-spacing: -0.01em; }
 .badge.gris { background: var(--gris-badge); color: var(--texte); }
 /* Explication (SHAP) : barres divergentes autour d'un axe central */
 .shap { margin: 0.2rem 0 0.4rem; }
+.shap-regle, .shap-titre { color: var(--texte); font-size: 0.95rem; margin: 0.3rem 0; }
 .shap-ligne { display: grid; grid-template-columns: 17rem 1fr 1fr; align-items: center; min-height: 1.7rem; }
 .shap-nom { color: var(--texte); font-size: 0.95rem; }
 .shap-gauche { display: flex; justify-content: flex-end; border-right: 2px solid var(--texte); height: 1.7rem;

@@ -117,7 +117,7 @@ class Journal:
             lignes = connexion.execute(f"""
                 SELECT {colonnes},
                        a.avis AS avis, a.classe_proposee AS avis_classe, a.motif AS avis_motif,
-                       a.date AS avis_date,
+                       a.precisions AS avis_precisions, a.date AS avis_date,
                        f.classe_reelle AS observee_classe, f.date AS observee_date
                 FROM inferences i
                 LEFT JOIN avis_conseillers a ON a.id_avis = (
@@ -134,7 +134,8 @@ class Journal:
                 element[champ] = json.loads(element[champ]) if element[champ] else None
             element["avis_conseiller"] = None if ligne["avis"] is None else {
                 "avis": ligne["avis"], "classe_proposee": ligne["avis_classe"],
-                "motif": ligne["avis_motif"], "date": ligne["avis_date"]}
+                "motif": ligne["avis_motif"], "precisions": ligne["avis_precisions"],
+                "date": ligne["avis_date"]}
             element["situation_observee"] = None if ligne["observee_classe"] is None else {
                 "classe_reelle": ligne["observee_classe"], "date": ligne["observee_date"]}
             historique.append(element)

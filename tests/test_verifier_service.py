@@ -18,7 +18,9 @@ RACINE = Path(__file__).resolve().parents[1]
 CLE = "cle-de-test"
 
 
-def faux_service(version_sante, version_prediction, classe, code_sante=200):
+def faux_service(version_sante, version_prediction, classe, code_sante=200, avec_explication=True):
+    explication = {"classe_expliquee": classe, "facteurs": [{"facteur": "Âge", "contribution": 0.1}],
+                   "regle": {"motif": "plus_probable_0_1"}} if avec_explication else None
     class Gestionnaire(BaseHTTPRequestHandler):
         def log_message(self, *args):
             pass
@@ -43,7 +45,8 @@ def faux_service(version_sante, version_prediction, classe, code_sante=200):
                 return self.repondre(503, {"detail": "Données absentes."})
             self.repondre(200, {"id_prediction": "1", "classe": classe, "recommandation": "r",
                                 "niveau_alerte": "Faible", "risque_longue_duree": 0.2,
-                                "risque_affiche": "20%", "version_modele": version_prediction})
+                                "risque_affiche": "20%", "version_modele": version_prediction,
+                                "explication": explication})
 
     serveur = HTTPServer(("127.0.0.1", 0), Gestionnaire)
     threading.Thread(target=serveur.serve_forever, daemon=True).start()
@@ -87,5 +90,16 @@ def test_delai_maximal_depasse():
         resultat = verifier(url, "--essais", "1000", "--pause", "0.1", "--duree-max", "1")
         assert resultat.returncode == 1, resultat.stdout + resultat.stderr
         assert "délai maximal" in resultat.stdout and "Prédiction" not in resultat.stdout
+    finally:
+        serveur.shutdown()
+
+
+def test_explication_obligatoire():
+    serveur = faux_service("controle-1", "controle-1", 1, avec_explication=False)
+    try:
+        url = f"http://127.0.0.1:{serveur.server_address[1]}"
+        resultat = verifier(url, "--essais", "2", "--pause", "0.1")
+        assert resultat.returncode == 1, resultat.stdout + resultat.stderr
+        assert "explication" in resultat.stdout
     finally:
         serveur.shutdown()

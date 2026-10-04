@@ -70,6 +70,8 @@ def test_prediction(client):
     explication = resultat["explication"]
     assert explication["classe_expliquee"] == resultat["classe"]
     assert len(explication["facteurs"]) == 5
+    assert explication["regle"]["motif"] in ("seuil_classe_2", "garde_fou", "plus_probable_0_1")
+    assert explication["regle"]["risque_recalibre"] == resultat["risque_longue_duree"]
     sorties = client.get("/history", headers=ENTETE).json()[0]["sorties"]
     assert sorties["explication"] == explication
 
@@ -174,6 +176,7 @@ def test_avis_du_conseiller_distinct_du_feedback(client):
     element = client.get("/history?limite=1", headers=ENTETE).json()[0]
     avis_enregistre = element["avis_conseiller"]
     assert avis_enregistre["avis"] == "corrige" and avis_enregistre["classe_proposee"] == 1
+    assert avis_enregistre["motif"] == "Autre" and avis_enregistre["precisions"] == "Formation"   # relisible
     assert element["situation_observee"] is None   # l'avis n'est PAS une situation observée
     client.post("/feedback", json={"id_prediction": id_prediction, "classe_reelle": 2}, headers=ENTETE)
     element = client.get("/history?limite=1", headers=ENTETE).json()[0]
