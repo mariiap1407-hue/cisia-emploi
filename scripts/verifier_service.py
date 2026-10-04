@@ -5,7 +5,8 @@ Bibliothèque standard seulement : s'exécute sur n'importe quelle machine avec 
 Contrôles :
 1. attente active sur /health (délai maximal par requête, nombre d'essais limité) jusqu'au code 200 ;
 2. si --version est donnée : la version servie doit être exactement celle-là (bon modèle déployé) ;
-3. /predict avec la clé : code 200, champs attendus, classe dans {0, 1, 2}, risque fini entre 0 et 1 ;
+3. /predict avec la clé : code 200, champs attendus, même version que --version, classe dans {0, 1, 2},
+   risque fini entre 0 et 1 ;
 4. /predict sans clé : code 401 ;
 5. si --retrain est donné : code attendu de /retrain (503 dans une image sans données).
 
@@ -56,12 +57,17 @@ def main():
     parser.add_argument("--version", help="version de modèle attendue sur /health")
     parser.add_argument("--essais", type=int, default=30, help="nombre d'essais sur /health")
     parser.add_argument("--pause", type=float, default=2, help="secondes entre deux essais")
+    parser.add_argument("--duree-max", type=float, default=None,
+                        help="durée maximale d'attente de /health, en secondes (en plus du nombre d'essais)")
     parser.add_argument("--retrain", type=int, help="code HTTP attendu pour /retrain")
     args = parser.parse_args()
     url = args.url.rstrip("/")
 
-    # 1-2. Disponibilité (et bonne version), avec attente active
+    # 1-2. Disponibilité (et bonne version), avec attente active bornée (essais ET durée totale)
+    debut = time.monotonic()
     for essai in range(1, args.essais + 1):
+        if args.duree_max is not None and time.monotonic() - debut > args.duree_max:
+            break
         code, sante = appeler("GET", f"{url}/health", delai=10)
         if code == 200 and (args.version is None or (sante or {}).get("version_modele") == args.version):
             print(f"Santé 200 après {essai} essai(s) : {sante}")
@@ -78,6 +84,8 @@ def main():
     manquants = CHAMPS_PREDICTION - set(prediction or {})
     if manquants:
         echec(f"/predict : champs manquants {sorted(manquants)}")
+    if args.version is not None and prediction["version_modele"] != args.version:
+        echec(f"/predict : version {prediction['version_modele']} (attendue {args.version})")
     risque = prediction["risque_longue_duree"]
     if prediction["classe"] not in (0, 1, 2):
         echec(f"/predict : classe {prediction['classe']} hors de {{0, 1, 2}}")

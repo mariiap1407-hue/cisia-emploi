@@ -30,11 +30,12 @@ on:
         description: "Jeu de référence du quality gate (reference_derivee.csv pour la démonstration d'échec)"
         default: data/factice/reference.csv
 
-# Un nouveau push sur la même branche annule le run précédent encore en cours :
-# un ancien commit ne peut pas publier ou déployer après un plus récent
+# Un seul run à la fois par branche. Hors de main, un nouveau push annule le run précédent (CI
+# dépassée). Sur main, le run en cours va jusqu'au bout (déploiement ET vérification) et le suivant
+# attend : un déploiement n'est jamais interrompu, et un ancien commit ne passe jamais après un récent.
 concurrency:
   group: ci-cd-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
   test:
@@ -90,11 +91,13 @@ jobs:
           name: modele-controle
           path: models/ci/
 
-      - name: Faire remonter le rapport du quality gate (traçabilité)
+      - name: Faire remonter le rapport du quality gate (traçabilité, même en cas d'échec du gate)
+        if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v7
         with:
           name: rapport-quality-gate
           path: rapport/
+          if-no-files-found: warn
 
   build-test-push:
     needs: test   # ne démarre que si le job test (dont le quality gate) a réussi
@@ -208,6 +211,7 @@ jobs:
           CLE: ${{ secrets.CISIA_CLE_API_DEMO }}
           URL: ${{ vars.RENDER_URL }}
         run: |
-          # Render télécharge l'image puis démarre le service : jusqu'à 15 minutes d'attente
+          # Render télécharge l'image puis démarre le service : 15 minutes d'attente au maximum
           python3 scripts/verifier_service.py "$URL" --cle "$CLE" \
-            --version "${{ needs.build-test-push.outputs.version }}" --essais 90 --pause 10 --retrain 503
+            --version "${{ needs.build-test-push.outputs.version }}" --essais 90 --pause 10 --duree-max 900 \
+            --retrain 503
