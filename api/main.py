@@ -38,7 +38,13 @@ from fastapi.responses import JSONResponse
 from fastapi.security import APIKeyHeader
 
 from api.journal import Journal
-from api.reentrainement import EchecReentrainement, lancer_script, reentrainer, retablir_alias
+from api.reentrainement import (
+    AucunFeedbackUtilisable,
+    EchecReentrainement,
+    lancer_script,
+    reentrainer,
+    retablir_alias,
+)
 from api.schemas import (
     DemandePrediction,
     ElementHistorique,
@@ -238,35 +244,59 @@ def creer_application(dossier_production=None, chemin_base=None, cle_api=None, d
             version_avant = version_de(service_avant)
             chemin_actuelle = dossier_production / FICHIER_ACTUELLE
             pointeur_avant = chemin_actuelle.read_bytes() if chemin_actuelle.exists() else None
-            try:
-                resultat = reentrainer(feedbacks, donnees_entrainement, dossier_production,
-                                       demande.promouvoir, lanceur)
-            except (EchecReentrainement, OSError, subprocess.SubprocessError) as erreur:
-                journal.enregistrer_reentrainement(date_debut, maintenant(), "erreur", len(feedbacks),
-                                                   version_avant=version_avant, version_apres=version_avant,
-                                                   message_erreur=repr(erreur))
-                raise HTTPException(status_code=500, detail="Échec du réentraînement ; le modèle en service "
-                                                            "n'a pas changé.") from erreur
-            if resultat["statut"] == "mis_en_production":
+
+            def lire():
+                return chemin_actuelle.read_bytes() if chemin_actuelle.exists() else None
+
+            def revenir_a_l_etat_precedent():
+                """Après un échec : si le pointeur a changé (publication faite), le rétablir, remettre
+                l'alias, puis VÉRIFIER. Renvoie (retour arrière confirmé ?, message pour le journal)."""
+                if lire() == pointeur_avant:
+                    return True, "pointeur inchangé : aucun retour arrière nécessaire"
                 try:
-                    charger_modele(application)   # le nouveau modèle répond dès maintenant
-                except Exception as erreur:
-                    # Nouveau modèle publié mais impossible à charger : retour à la version précédente
-                    # (pointeur actuelle.json et alias du registre), l'API n'a jamais cessé de la servir
-                    message = f"activation impossible : {erreur!r}"
                     if pointeur_avant is None:
                         chemin_actuelle.unlink(missing_ok=True)
                     else:
                         ecrire_en_une_operation(chemin_actuelle, pointeur_avant)
-                    try:
-                        retablir_alias(service_avant[1].get("version_registre") if service_avant else None)
-                    except Exception as erreur_alias:
-                        message += f" ; alias du registre NON rétabli : {erreur_alias!r}"
-                    journal.enregistrer_reentrainement(
-                        date_debut, maintenant(), "erreur_activation", len(feedbacks), resultat["run_id"],
-                        version_avant, version_avant, {"resultats_test": resultat["resultats_test"]}, message)
-                    raise HTTPException(status_code=500, detail="Le nouveau modèle n'a pas pu être chargé : "
-                                        f"retour à la version précédente ({version_avant}).") from erreur
+                except OSError as erreur:
+                    return False, f"pointeur NON rétabli : {erreur!r}"
+                message = "pointeur rétabli"
+                try:
+                    retablir_alias(service_avant[1].get("version_registre") if service_avant else None)
+                except Exception as erreur:
+                    message += f" ; alias du registre NON rétabli : {erreur!r}"
+                confirme = lire() == pointeur_avant
+                return confirme, message + (" et vérifié" if confirme else " mais NON vérifié")
+
+            def echec(statut, erreur, run_id=None):
+                confirme, retour = revenir_a_l_etat_precedent()
+                journal.enregistrer_reentrainement(date_debut, maintenant(), statut, len(feedbacks), run_id,
+                                                   version_avant, version_de(application.state.service),
+                                                   message_erreur=f"{erreur!r} ; {retour}")
+                if confirme:
+                    detail = f"Échec du réentraînement : la version {version_avant} reste en service."
+                else:
+                    detail = "Échec du réentraînement ET retour arrière non confirmé : voir le journal."
+                return HTTPException(status_code=500, detail=detail)
+
+            try:
+                resultat = reentrainer(feedbacks, donnees_entrainement, dossier_production,
+                                       demande.promouvoir, lanceur)
+            except AucunFeedbackUtilisable as erreur:
+                journal.enregistrer_reentrainement(date_debut, maintenant(), "aucun_feedback_utilisable", 0,
+                                                   version_avant=version_avant,
+                                                   version_apres=version_avant)
+                raise HTTPException(status_code=409, detail="Aucun feedback utilisable : tous ont un profil "
+                                                            "déjà présent dans le jeu de test.") from erreur
+            except (EchecReentrainement, OSError, subprocess.SubprocessError) as erreur:
+                # Y compris un échec APRÈS la publication (délai dépassé...) : retour arrière vérifié
+                raise echec("erreur", erreur) from erreur
+            if resultat["statut"] == "mis_en_production":
+                try:
+                    charger_modele(application)   # le nouveau modèle répond dès maintenant
+                except Exception as erreur:
+                    # Nouveau modèle publié mais impossible à charger : même retour arrière
+                    raise echec("erreur_activation", erreur, resultat["run_id"]) from erreur
             version_apres = version_de(application.state.service)
             journal.enregistrer_reentrainement(
                 date_debut, maintenant(), resultat["statut"], resultat["n_feedbacks"], resultat["run_id"],

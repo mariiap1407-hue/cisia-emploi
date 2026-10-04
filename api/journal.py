@@ -38,7 +38,7 @@ CREATE TABLE IF NOT EXISTS reentrainements (
     date_debut TEXT NOT NULL,
     date_fin TEXT,
     statut TEXT NOT NULL,          -- mis_en_production, candidat_non_promu, refuse_quality_gate,
-                                   -- erreur, erreur_activation (retour à la version précédente)
+                                   -- erreur, erreur_activation, aucun_feedback_utilisable
     n_feedbacks INTEGER,
     run_id TEXT,
     version_avant TEXT,

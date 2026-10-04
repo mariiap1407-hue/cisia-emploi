@@ -2,6 +2,7 @@
 
 import json
 import shutil
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -241,13 +242,47 @@ def test_echec_du_chargement_retour_a_la_version_precedente(production, producti
     with TestClient(application) as client:
         prediction_avec_feedback(client)
         reponse = client.post("/retrain", headers=ENTETE)
-        assert reponse.status_code == 500 and "version précédente" in reponse.json()["detail"]
+        assert reponse.status_code == 500 and "controle reste en service" in reponse.json()["detail"]
         assert client.get("/health").json()["version_modele"] == "controle"   # toujours servie
         assert predire(client).status_code == 200
     pointeur = json.loads((production_copiee / "actuelle.json").read_text(encoding="utf-8"))
     assert pointeur["run_id"] == "controle"   # le pointeur sur disque est rétabli
     trace, = Journal(tmp_path / "journal.db").reentrainements()
     assert trace["statut"] == "erreur_activation"
+
+
+def test_echec_apres_publication_retour_a_la_version_precedente(production, production_copiee, tmp_path,
+                                                               donnees_factices):
+    """Le script publie le nouveau modèle PUIS échoue (délai dépassé) : le pointeur est rétabli,
+    sinon un simple redémarrage de l'API activerait un modèle dont la mise en service a échoué."""
+    lanceur_normal = faux_lanceur(production, True, {})
+
+    def lanceur_qui_expire(chemin_feedbacks, donnees, dossier_modeles, dossier_production, promouvoir):
+        lanceur_normal(chemin_feedbacks, donnees, dossier_modeles, dossier_production, promouvoir)
+        raise subprocess.TimeoutExpired("entrainer.py", 1800)
+
+    application = application_reentrainement(production, production_copiee, tmp_path, donnees_factices,
+                                             lanceur_qui_expire)
+    with TestClient(application) as client:
+        prediction_avec_feedback(client)
+        reponse = client.post("/retrain", headers=ENTETE)
+        assert reponse.status_code == 500 and "controle reste en service" in reponse.json()["detail"]
+    pointeur = json.loads((production_copiee / "actuelle.json").read_text(encoding="utf-8"))
+    assert pointeur["run_id"] == "controle"   # un redémarrage rechargerait bien l'ancienne version
+    trace, = Journal(tmp_path / "journal.db").reentrainements()
+    assert trace["statut"] == "erreur"
+
+
+def test_aucun_feedback_utilisable(production, production_copiee, tmp_path, donnees_factices):
+    """Tous les feedbacks écartés par le script (profil déjà dans le test) : 409, pas de réentraînement."""
+    def lanceur(chemin_feedbacks, donnees, dossier_modeles, dossier_production, promouvoir):
+        return 2, "Aucun feedback utilisable : tous ont un profil déjà présent dans le jeu de test."
+
+    application = application_reentrainement(production, production_copiee, tmp_path, donnees_factices,
+                                             lanceur)
+    with TestClient(application) as client:
+        prediction_avec_feedback(client)
+        assert client.post("/retrain", headers=ENTETE).status_code == 409
 
 
 def test_version_coherente_si_le_modele_change_pendant_une_prediction(client):

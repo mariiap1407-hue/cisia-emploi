@@ -124,12 +124,25 @@ def enregistrer_matrice_confusion(y_test, classes, dossier):
 CHAMPS_PROFIL = ["age", "niveau_diplome", "anciennete_poste_ans", "code_rome_vise", "synthese_entretien"]
 
 
+def nombre_canonique(valeur):
+    """53, 53.0 et « 53 » donnent la même écriture ; valeur manquante = texte vide."""
+    nombre = pd.to_numeric(valeur, errors="coerce")
+    return "" if pd.isna(nombre) else f"{round(float(nombre), 2):g}"
+
+
+def texte_canonique(valeur):
+    """Espaces de début / fin retirés, espaces multiples réduits, majuscules ignorées."""
+    return "" if pd.isna(valeur) else " ".join(str(valeur).split()).casefold()
+
+
 def profils(df):
-    """Une clé texte par usager, construite sur les informations utilisées par le modèle."""
-    colonnes = df[CHAMPS_PROFIL].copy()
-    for nombre in ["age", "anciennete_poste_ans"]:
-        colonnes[nombre] = pd.to_numeric(colonnes[nombre], errors="coerce").round(2)
-    colonnes = colonnes.astype("string").fillna("").apply(lambda colonne: colonne.str.strip())
+    """Une clé par usager, construite sur les informations utilisées par le modèle, écrites de la
+    même façon des deux côtés (fichier d'origine, feedbacks venus de l'API) : nombres entiers ou
+    décimaux, code ROME en minuscules ou majuscules, espaces en trop."""
+    colonnes = pd.DataFrame(index=df.index)
+    for champ in CHAMPS_PROFIL:
+        conversion = nombre_canonique if champ in ("age", "anciennete_poste_ans") else texte_canonique
+        colonnes[champ] = df[champ].map(conversion)
     return colonnes.agg("|".join, axis=1)
 
 
@@ -193,6 +206,9 @@ def main():
             print(f"{n_feedbacks_ecartes} feedback(s) écarté(s) : profil identique à un usager du test")
         feedbacks = feedbacks[~deja_dans_le_test]
         n_feedbacks = len(feedbacks)
+        if n_feedbacks == 0:   # rien de nouveau à apprendre : pas de réentraînement (code 2)
+            print("Aucun feedback utilisable : tous ont un profil déjà présent dans le jeu de test.")
+            sys.exit(2)
         entrainement = pd.concat([entrainement, feedbacks], ignore_index=True)
     X_train, y_train = separer_x_y(nettoyer(entrainement))
     X_test, y_test = separer_x_y(nettoyer(test))

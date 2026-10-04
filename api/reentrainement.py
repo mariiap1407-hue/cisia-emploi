@@ -40,6 +40,10 @@ class EchecReentrainement(Exception):
     """Le script n'a pas produit de candidat (erreur technique, données refusées...)."""
 
 
+class AucunFeedbackUtilisable(Exception):
+    """Tous les feedbacks ont été écartés (profil déjà dans le jeu de test) : rien à réentraîner."""
+
+
 def vers_tableau_entrainement(feedbacks):
     """Feedbacks au format du fichier d'origine (une ligne par prédiction corrigée)."""
     lignes = []
@@ -83,6 +87,8 @@ def reentrainer(feedbacks, donnees, dossier_production, promouvoir=True, lanceur
         code_retour, sorties = lanceur(chemin_feedbacks, donnees, dossier_modeles, dossier_production,
                                        promouvoir)
 
+    if "Aucun feedback utilisable" in sorties:
+        raise AucunFeedbackUtilisable()
     trouve = re.search(r"Run MLflow : (\S+)", sorties)
     run_id = trouve.group(1) if trouve else "?"
     chemin_infos = dossier_modeles / "candidats" / run_id / "infos_entrainement.json"

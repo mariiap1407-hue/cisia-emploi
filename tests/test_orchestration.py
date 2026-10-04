@@ -163,7 +163,13 @@ def test_feedbacks_ajoutes_a_l_entrainement_jamais_au_test(donnees_factices, tmp
 def test_feedback_deja_dans_le_jeu_de_test_ecarte(donnees_factices, tmp_path):
     """Un usager du jeu de test renvoyé par predict → feedback n'entre pas dans l'entraînement."""
     _, test = decouper(charger_donnees(donnees_factices / "entrainement.csv"))
-    feedbacks = pd.concat([test.head(1), charger_donnees(donnees_factices / "reference.csv").head(1)])
+    # Même usager que dans le test, écrit autrement : code ROME en minuscules (accepté par l'API),
+    # âge entier au lieu de décimal, espaces en trop dans la synthèse
+    deguise = test[test["age"].notna()].head(1).copy()
+    deguise["code_rome_vise"] = deguise["code_rome_vise"].str.lower()
+    deguise["age"] = deguise["age"].astype("Int64")
+    deguise["synthese_entretien"] = "  " + deguise["synthese_entretien"].str.replace(" ", "  ") + " "
+    feedbacks = pd.concat([deguise, charger_donnees(donnees_factices / "reference.csv").head(1)])
     feedbacks["usager_id"] = ["FEEDBACK_test", "FEEDBACK_nouveau"]
     chemin_feedbacks = tmp_path / "feedbacks.csv"
     feedbacks.to_csv(chemin_feedbacks, index=False)
@@ -174,3 +180,12 @@ def test_feedback_deja_dans_le_jeu_de_test_ecarte(donnees_factices, tmp_path):
     infos = json.loads((candidat / "infos_entrainement.json").read_text(encoding="utf-8"))
     assert (infos["n_feedbacks"], infos["n_feedbacks_ecartes"]) == (1, 1)
 
+
+
+def test_aucun_feedback_utilisable_pas_de_reentrainement(donnees_factices, tmp_path):
+    _, test = decouper(charger_donnees(donnees_factices / "entrainement.csv"))
+    chemin_feedbacks = tmp_path / "feedbacks.csv"
+    test.head(2).to_csv(chemin_feedbacks, index=False)   # uniquement des usagers du jeu de test
+    resultat = lancer(tmp_path, "--feedbacks", str(chemin_feedbacks))
+    assert resultat.returncode == 2 and "Aucun feedback utilisable" in resultat.stdout
+    assert not (tmp_path / "models" / "candidats").exists()
