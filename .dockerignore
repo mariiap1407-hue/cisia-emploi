@@ -1,0 +1,16 @@
+# Liste BLANCHE : seuls les éléments ci-dessous partent dans l'image.
+# Tout le reste est exclu par défaut, en particulier : .env (clé), data/ (données personnelles),
+# outputs/ (journal avec des profils d'usagers), mlflow.db, notebooks/, models/candidats/, .git/
+*
+!requirements.txt
+!pyproject.toml
+!src
+!api
+!config
+!models/production
+
+# Fichiers générés, jamais utiles dans l'image
+**/__pycache__
+**/*.pyc
+**/*.egg-info
+**/*.tmp
