@@ -67,9 +67,10 @@ PERIODES = ["Tout", "Aujourd'hui", "7 derniers jours", "Ce mois-ci"]
 STATUTS_RETOUR = ["Tous les statuts", "À examiner", "Confirmée", "Corrigée"]
 
 
-# Démonstration : les dates du référentiel fictif sont RELATIVES au jour de lancement (inscription il y a
-# quelques jours = premier entretien), et la situation observée est lue à une date SIMULÉE, 400 jours plus
-# tard : la chronologie reste cohérente (prédiction au premier entretien, issue connue ensuite).
+# Démonstration : les dates du référentiel fictif sont RELATIVES à un jour d'ancrage (inscription quelques
+# jours avant = premier entretien), et la situation observée est lue à une date SIMULÉE, 400 jours plus
+# tard. Pour une nouvelle analyse, l'ancrage est aujourd'hui ; pour une prédiction enregistrée, c'est SA
+# date (episode_de_la_prediction) : la chronologie d'une prédiction ne bouge plus avec le temps.
 DECALAGE_OBSERVATION_JOURS = 400
 FENETRE_PREMIER_ENTRETIEN_JOURS = 31
 
@@ -126,6 +127,19 @@ def situation_depuis_referentiel(dossier, jour):
     if reprise is not None and reprise <= jour:                  # reprise déjà constatée
         return 0 if reprise < six_mois else 1 if reprise <= douze_mois else 2
     return 2 if jour > douze_mois else None
+
+
+def episode_de_la_prediction(id_usager, date_prediction, chemin=REFERENTIEL):
+    """Épisode du référentiel FICTIF rattaché à une prédiction, et date d'observation simulée.
+
+    La chronologie de démonstration est ancrée sur la date de la PRÉDICTION (enregistrée dans le journal),
+    et non sur le jour où l'on consulte : rouvrir une prédiction plus tard redonne exactement les mêmes
+    dates d'inscription, de reprise et d'observation. Renvoie (dossier, date_observation), ou None si
+    l'identifiant n'est pas dans le référentiel.
+    """
+    jour = datetime.fromisoformat(date_prediction).astimezone(FUSEAU).date()
+    dossier = charger_referentiel(chemin, jour=jour).get(id_usager or "")
+    return None if dossier is None else (dossier, date_observation_demo(jour))
 
 
 def premier_entretien_valide(dossier, date_prediction):

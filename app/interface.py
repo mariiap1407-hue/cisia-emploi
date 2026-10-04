@@ -26,7 +26,7 @@ from presentation import (
     age_au,
     charger_referentiel,
     date_locale,
-    date_observation_demo,
+    episode_de_la_prediction,
     filtrer,
     lecture_explication,
     libelle_metier,
@@ -387,12 +387,13 @@ def situation_observee_formulaire(courant):
     cle = courant["id_prediction"]
 
     # 1. Voie normale : rapprochement avec le référentiel des usagers (dates d'inscription et de reprise)
-    dossier = REFERENTIEL.get(courant.get("id_usager") or "")
+    # Épisode ancré sur la date de la prédiction : identique quel que soit le jour de consultation
+    episode = episode_de_la_prediction(courant.get("id_usager"), courant["date"])
+    dossier, observation = episode if episode else (None, None)
     if dossier and not premier_entretien_valide(dossier, courant["date"]):
         html('<p class="aide-saisie">Cette analyse n\'a pas été faite au premier entretien (ou l\'a été '
              'après une reprise d\'emploi) : la situation du référentiel ne peut pas lui être rattachée.</p>')
     elif dossier:
-        observation = date_observation_demo()
         html(f'<p class="aide-saisie">Démonstration : le référentiel fictif est lu à une date d\'observation '
              f'<b>simulée</b>, le {observation.strftime("%d/%m/%Y")}.</p>')
         if st.button("Interroger le référentiel", key=f"referentiel_{cle}"):

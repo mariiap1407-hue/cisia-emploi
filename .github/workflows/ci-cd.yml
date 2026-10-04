@@ -54,6 +54,7 @@ jobs:
           cache-dependency-path: |
             requirements.txt
             requirements-ci.txt
+            requirements-ui.txt
 
       - name: Installer les dépendances et le module cisia
         run: |
@@ -133,10 +134,29 @@ jobs:
             --label "org.opencontainers.image.revision=${{ github.sha }}" \
             -t cisia-api:ci .
 
-      - name: Vérifier que les images MLflow et de l'interface se construisent (construction seulement)
+      - name: Vérifier que les images MLflow et de l'interface se construisent
         run: |
           docker build -t cisia-mlflow:ci docker/mlflow
           docker build -f docker/ui/Dockerfile -t cisia-ui:ci .
+
+      # Le parcours de l'interface est testé dans le job test (tests/test_interface.py) ; ici, on vérifie
+      # que l'IMAGE de l'interface démarre réellement (dépendances, configuration, serveur Streamlit).
+      - name: Vérifier que l'image de l'interface démarre
+        run: |
+          docker run -d --name ui-test -p 8501:8501 -e CISIA_API_URL=http://127.0.0.1:9 cisia-ui:ci
+          for essai in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:8501/_stcore/health; then echo " : interface prête (essai $essai)"; exit 0; fi
+            sleep 2
+          done
+          echo "L'interface n'a pas démarré en 60 s"; exit 1
+
+      - name: Journaux de l'interface en cas d'échec
+        if: failure()
+        run: docker logs ui-test || true
+
+      - name: Arrêter le conteneur de l'interface
+        if: always()
+        run: docker rm -f ui-test || true
 
       - name: Tester l'image AVANT publication
         run: |

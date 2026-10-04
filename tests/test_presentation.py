@@ -4,6 +4,7 @@ from datetime import date, datetime, timezone
 
 import pytest
 
+import app.presentation as presentation
 from app.presentation import (
     AGES,
     ANCIENNETES,
@@ -13,6 +14,7 @@ from app.presentation import (
     charger_referentiel,
     date_locale,
     date_observation_demo,
+    episode_de_la_prediction,
     filtrer,
     lecture_explication,
     libelle_metier,
@@ -162,3 +164,21 @@ def test_lecture_de_l_explication():
         [("pour", 100), ("contre", 50), ("neutre", 0)]
     assert lecture["mots_pour"] == ["permis"] and lecture["mots_contre"] == ["mobilité"]
     assert lecture_explication(None) is None                 # prédiction d'avant l'ajout de SHAP
+
+
+def test_episode_stable_quel_que_soit_le_jour_de_consultation(monkeypatch):
+    # Relecture B9 : rouvrir une prédiction plus tard ne doit changer ni ses dates ni son éligibilité
+    prediction = "2026-10-04T09:30:00+00:00"
+    resultats = []
+    for jour_de_consultation in (date(2026, 10, 4), date(2026, 10, 20), date(2027, 3, 1)):
+        class Aujourdhui(date):                                      # « aujourd'hui » simulé
+            @classmethod
+            def today(cls, jour=jour_de_consultation):
+                return jour
+        monkeypatch.setattr(presentation, "date", Aujourdhui)
+        dossier, observation = episode_de_la_prediction("DE-0001", prediction)
+        assert premier_entretien_valide(dossier, prediction)
+        resultats.append((dossier, observation, situation_depuis_referentiel(dossier, observation)))
+    assert resultats[0] == resultats[1] == resultats[2]               # même chronologie, même étiquette
+    assert resultats[0][1] == date(2027, 11, 8)                       # 04/10/2026 + 400 jours
+    assert episode_de_la_prediction("INCONNU", prediction) is None

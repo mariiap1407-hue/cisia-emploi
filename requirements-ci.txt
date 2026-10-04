@@ -1,6 +1,8 @@
 # Dépendances de la CI (GitHub Actions) : production + tests et qualité du code.
 # Plus léger que requirements-dev.txt (pas de JupyterLab, XGBoost, CatBoost : ils ne servent qu'au notebook).
 -r requirements.txt
+# Interface : nécessaire au test de son parcours (Streamlit AppTest, tests/test_interface.py)
+-r requirements-ui.txt
 
 pytest==9.1.1
 httpx==0.28.1
