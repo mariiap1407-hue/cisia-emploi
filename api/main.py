@@ -38,7 +38,7 @@ from fastapi.responses import JSONResponse
 from fastapi.security import APIKeyHeader
 
 from api.journal import Journal
-from api.reentrainement import EchecReentrainement, lancer_script, reentrainer
+from api.reentrainement import EchecReentrainement, lancer_script, reentrainer, retablir_alias
 from api.schemas import (
     DemandePrediction,
     ElementHistorique,
@@ -52,7 +52,7 @@ from api.schemas import (
     erreurs_sans_valeurs,
     vers_tableau,
 )
-from cisia.modele_mlflow import FICHIER_ACTUELLE, charger_modele_en_service
+from cisia.modele_mlflow import FICHIER_ACTUELLE, charger_modele_en_service, ecrire_en_une_operation
 
 RACINE = Path(__file__).resolve().parents[1]
 load_dotenv(RACINE / ".env")
@@ -95,16 +95,21 @@ def creer_application(dossier_production=None, chemin_base=None, cle_api=None, d
             raise HTTPException(status_code=401, detail="Clé d'API absente ou invalide.")
 
     def charger_modele(application):
-        """Charge le modèle déclaré en service (au démarrage, puis après une mise en production)."""
+        """Charge le modèle déclaré en service (au démarrage, puis après une mise en production).
+
+        Le modèle et ses informations (version, run) forment UN seul objet, remplacé d'un coup :
+        une prédiction en cours garde le couple qu'elle a lu au départ (jamais l'ancien modèle
+        avec le numéro de la nouvelle version).
+        """
         modele = charger_modele_en_service(dossier_production)
         infos = json.loads((dossier_production / FICHIER_ACTUELLE).read_text(encoding="utf-8"))
-        application.state.modele, application.state.infos_modele = modele, infos
+        application.state.service = (modele, infos)
 
     @asynccontextmanager
     async def cycle_de_vie(application):
         # Chargement du modèle au démarrage. S'il est absent, l'API démarre quand même :
         # /health répond 503 (pas prête) et /predict répond 503.
-        application.state.modele, application.state.infos_modele = None, {}
+        application.state.service = None
         try:
             charger_modele(application)
         except FileNotFoundError:
@@ -114,8 +119,10 @@ def creer_application(dossier_production=None, chemin_base=None, cle_api=None, d
     application = FastAPI(title="CISIA · Orientation des demandeurs d'emploi", version="1.2",
                           lifespan=cycle_de_vie)
 
-    def version_modele():
-        infos = application.state.infos_modele
+    def version_de(service):
+        if service is None:
+            return None
+        infos = service[1]
         return str(infos.get("version_registre") or infos.get("run_id") or "inconnue")
 
     @application.exception_handler(RequestValidationError)
@@ -134,13 +141,14 @@ def creer_application(dossier_production=None, chemin_base=None, cle_api=None, d
                      responses={503: {"model": Sante, "description": "Service non prêt"}})
     def sante():
         """Le service est-il prêt à prédire ? 200 si un modèle est chargé ET une clé configurée, 503 sinon."""
-        modele_charge = application.state.modele is not None
+        service = application.state.service
+        modele_charge = service is not None
         cle_configuree = bool(cle_attendue)
         pret = modele_charge and cle_configuree
         contenu = {"statut": "ok" if pret else "indisponible", "modele_charge": modele_charge,
                    "cle_configuree": cle_configuree,
-                   "version_modele": version_modele() if modele_charge else None,
-                   "run_id": application.state.infos_modele.get("run_id")}
+                   "version_modele": version_de(service),
+                   "run_id": service[1].get("run_id") if modele_charge else None}
         return JSONResponse(status_code=200 if pret else 503, content=contenu)
 
     @application.post("/predict", response_model=Prediction, dependencies=[Depends(verifier_cle)],
@@ -150,17 +158,18 @@ def creer_application(dossier_production=None, chemin_base=None, cle_api=None, d
         """Recommandation, niveau d'alerte et risque de chômage de longue durée pour un usager."""
         id_prediction = str(uuid.uuid4())
         entrees = demande.usager.model_dump()
-        if application.state.modele is None:
+        service = application.state.service   # lu UNE fois : modèle et version restent cohérents
+        if service is None:
             journal.enregistrer_inference(id_prediction, maintenant(), demande.id_session, "indisponible",
                                           entrees=entrees, message_erreur="aucun modèle en production")
             raise HTTPException(status_code=503, detail="Aucun modèle en production.")
 
         debut = time.perf_counter()
         try:
-            sortie = application.state.modele.predict(vers_tableau(demande.usager)).iloc[0]
+            sortie = service[0].predict(vers_tableau(demande.usager)).iloc[0]
         except Exception as erreur:   # erreur inattendue : journalisée, puis réponse 500 sans détail interne
             journal.enregistrer_inference(id_prediction, maintenant(), demande.id_session, "erreur",
-                                          entrees=entrees, version_modele=version_modele(),
+                                          entrees=entrees, version_modele=version_de(service),
                                           message_erreur=repr(erreur))
             raise HTTPException(status_code=500, detail="Erreur lors de la prédiction.") from erreur
         duree_ms = (time.perf_counter() - debut) * 1000
@@ -172,7 +181,7 @@ def creer_application(dossier_production=None, chemin_base=None, cle_api=None, d
             niveau_alerte=sortie["niveau_alerte"],
             risque_longue_duree=round(float(sortie["risque_longue_duree"]), 4),
             risque_affiche=f"{float(sortie['risque_longue_duree']):.0%}",
-            version_modele=version_modele(),
+            version_modele=version_de(service),
         )
         journal.enregistrer_inference(id_prediction, maintenant(), demande.id_session, "ok",
                                       entrees=entrees, sorties=reponse.model_dump(),
@@ -203,8 +212,8 @@ def creer_application(dossier_production=None, chemin_base=None, cle_api=None, d
                                  409: {"model": Erreur, "description": "Pas assez de feedbacks, ou "
                                                                       "réentraînement déjà en cours"},
                                  500: {"model": Erreur,
-                                       "description": "Échec du réentraînement (journalisé) ; "
-                                                      "la production n'est pas modifiée"}})
+                                       "description": "Échec (journalisé) ; la version précédente "
+                                                      "reste en service"}})
     def retrain(demande: Reentrainement | None = None):
         """Réentraîne le modèle avec les feedbacks des conseillers (réentraînement monitoré).
 
@@ -225,7 +234,10 @@ def creer_application(dossier_production=None, chemin_base=None, cle_api=None, d
             raise HTTPException(status_code=409, detail="Un réentraînement est déjà en cours.")
         try:
             debut, date_debut = time.perf_counter(), maintenant()
-            version_avant = version_modele() if application.state.modele is not None else None
+            service_avant = application.state.service
+            version_avant = version_de(service_avant)
+            chemin_actuelle = dossier_production / FICHIER_ACTUELLE
+            pointeur_avant = chemin_actuelle.read_bytes() if chemin_actuelle.exists() else None
             try:
                 resultat = reentrainer(feedbacks, donnees_entrainement, dossier_production,
                                        demande.promouvoir, lanceur)
@@ -233,13 +245,31 @@ def creer_application(dossier_production=None, chemin_base=None, cle_api=None, d
                 journal.enregistrer_reentrainement(date_debut, maintenant(), "erreur", len(feedbacks),
                                                    version_avant=version_avant, version_apres=version_avant,
                                                    message_erreur=repr(erreur))
-                raise HTTPException(status_code=500, detail="Échec du réentraînement ; la production "
-                                                            "n'est pas modifiée.") from erreur
+                raise HTTPException(status_code=500, detail="Échec du réentraînement ; le modèle en service "
+                                                            "n'a pas changé.") from erreur
             if resultat["statut"] == "mis_en_production":
-                charger_modele(application)   # le nouveau modèle répond dès maintenant
-            version_apres = version_modele() if application.state.modele is not None else None
+                try:
+                    charger_modele(application)   # le nouveau modèle répond dès maintenant
+                except Exception as erreur:
+                    # Nouveau modèle publié mais impossible à charger : retour à la version précédente
+                    # (pointeur actuelle.json et alias du registre), l'API n'a jamais cessé de la servir
+                    message = f"activation impossible : {erreur!r}"
+                    if pointeur_avant is None:
+                        chemin_actuelle.unlink(missing_ok=True)
+                    else:
+                        ecrire_en_une_operation(chemin_actuelle, pointeur_avant)
+                    try:
+                        retablir_alias(service_avant[1].get("version_registre") if service_avant else None)
+                    except Exception as erreur_alias:
+                        message += f" ; alias du registre NON rétabli : {erreur_alias!r}"
+                    journal.enregistrer_reentrainement(
+                        date_debut, maintenant(), "erreur_activation", len(feedbacks), resultat["run_id"],
+                        version_avant, version_avant, {"resultats_test": resultat["resultats_test"]}, message)
+                    raise HTTPException(status_code=500, detail="Le nouveau modèle n'a pas pu être chargé : "
+                                        f"retour à la version précédente ({version_avant}).") from erreur
+            version_apres = version_de(application.state.service)
             journal.enregistrer_reentrainement(
-                date_debut, maintenant(), resultat["statut"], len(feedbacks), resultat["run_id"],
+                date_debut, maintenant(), resultat["statut"], resultat["n_feedbacks"], resultat["run_id"],
                 version_avant, version_apres,
                 {"resultats_test": resultat["resultats_test"], "echecs": resultat["echecs_quality_gate"]})
             return {**resultat, "version_modele_avant": version_avant, "version_modele": version_apres,

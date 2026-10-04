@@ -105,6 +105,7 @@ class Reentrainement(BaseModel):
 class ResultatReentrainement(BaseModel):
     statut: Literal["mis_en_production", "candidat_non_promu", "refuse_quality_gate"]
     n_feedbacks: int = Field(description="Feedbacks ajoutés aux données d'entraînement")
+    n_feedbacks_ecartes: int = Field(0, description="Feedbacks écartés (profil déjà dans le test)")
     run_id: str = Field(description="Run MLflow du nouvel entraînement")
     quality_gate_ok: bool
     echecs_quality_gate: list[str]

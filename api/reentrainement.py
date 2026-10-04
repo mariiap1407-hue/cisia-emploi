@@ -13,15 +13,18 @@ actuelle.json, puis alias « production »), production inchangée sinon.
 3. le script est lancé dans un processus séparé : python scripts/entrainer.py --feedbacks ...
    --sans-recherche [--promouvoir] ; un échec du script ne fait pas tomber l'API ;
 4. le résultat est lu dans le dossier du candidat (infos_entrainement.json) et dans actuelle.json.
+Le script publie dans le MÊME dossier de production que celui de l'API (--production).
 """
 
 import json
+import os
 import re
 import subprocess
 import sys
 import tempfile
 from pathlib import Path
 
+import mlflow
 import pandas as pd
 
 from cisia.modele_mlflow import FICHIER_ACTUELLE
@@ -30,6 +33,7 @@ from cisia.preparation import CIBLE, COLONNES_BRUTES
 RACINE = Path(__file__).resolve().parents[1]
 SCRIPT = RACINE / "scripts" / "entrainer.py"
 DELAI_MAXIMUM_S = 1800   # au-delà, le réentraînement est considéré comme bloqué
+NOM_MODELE = "cisia-orientation"
 
 
 class EchecReentrainement(Exception):
@@ -48,10 +52,10 @@ def vers_tableau_entrainement(feedbacks):
     return pd.DataFrame(lignes, columns=[*COLONNES_BRUTES, CIBLE])
 
 
-def lancer_script(chemin_feedbacks, donnees, dossier_modeles, promouvoir):
+def lancer_script(chemin_feedbacks, donnees, dossier_modeles, dossier_production, promouvoir):
     """Lance scripts/entrainer.py ; renvoie (code de retour, sorties texte)."""
     commande = [sys.executable, str(SCRIPT), "--donnees", str(donnees), "--feedbacks", str(chemin_feedbacks),
-                "--sortie", str(dossier_modeles), "--sans-recherche"]
+                "--sortie", str(dossier_modeles), "--production", str(dossier_production), "--sans-recherche"]
     if promouvoir:
         commande.append("--promouvoir")
     resultat = subprocess.run(commande, cwd=RACINE, capture_output=True, encoding="utf-8",
@@ -72,11 +76,12 @@ def reentrainer(feedbacks, donnees, dossier_production, promouvoir=True, lanceur
     `lanceur` est remplaçable dans les tests (même interface que lancer_script).
     """
     dossier_production = Path(dossier_production)
-    dossier_modeles = dossier_production.parent   # le script écrit dans <sortie>/candidats et /production
+    dossier_modeles = dossier_production.parent   # candidats : <parent>/candidats/<run>/
     with tempfile.TemporaryDirectory() as dossier_temporaire:
         chemin_feedbacks = Path(dossier_temporaire) / "feedbacks.csv"
         vers_tableau_entrainement(feedbacks).to_csv(chemin_feedbacks, index=False)
-        code_retour, sorties = lanceur(chemin_feedbacks, donnees, dossier_modeles, promouvoir)
+        code_retour, sorties = lanceur(chemin_feedbacks, donnees, dossier_modeles, dossier_production,
+                                       promouvoir)
 
     trouve = re.search(r"Run MLflow : (\S+)", sorties)
     run_id = trouve.group(1) if trouve else "?"
@@ -94,7 +99,17 @@ def reentrainer(feedbacks, donnees, dossier_production, promouvoir=True, lanceur
                                   f"fin des sorties : {sorties[-2000:]}")
     else:
         statut = "candidat_non_promu"
-    return {"statut": statut, "n_feedbacks": len(feedbacks), "run_id": infos["run_id"],
+    return {"statut": statut, "n_feedbacks": infos.get("n_feedbacks", len(feedbacks)),
+            "n_feedbacks_ecartes": infos.get("n_feedbacks_ecartes", 0), "run_id": infos["run_id"],
             "quality_gate_ok": bool(infos["quality_gate_ok"]),
             "echecs_quality_gate": infos.get("echecs_quality_gate", []),
             "resultats_test": infos.get("resultats_test", {})}
+
+
+def retablir_alias(version):
+    """Remet l'alias « production » du registre sur `version` (retour arrière après un échec d'activation)."""
+    if not version or os.getenv("USE_REGISTRY", "true").lower() != "true":
+        return
+    suivi_par_defaut = f"sqlite:///{(RACINE / 'mlflow.db').as_posix()}"   # comme scripts/entrainer.py
+    mlflow.set_tracking_uri(os.getenv("MLFLOW_TRACKING_URI", suivi_par_defaut))
+    mlflow.MlflowClient().set_registered_model_alias(NOM_MODELE, "production", str(version))

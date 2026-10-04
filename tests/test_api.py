@@ -140,8 +140,11 @@ def test_sans_modele_en_production(tmp_path):
 
 @pytest.fixture
 def production_copiee(production, tmp_path):
-    """Copie de la production de contrôle : un test peut la modifier sans gêner les autres."""
-    copie = tmp_path / "models" / "production"
+    """Copie de la production de contrôle : un test peut la modifier sans gêner les autres.
+
+    Le dossier ne s'appelle pas « production » : on vérifie que le script publie bien dans le
+    dossier configuré pour l'API (CISIA_PRODUCTION), quel que soit son nom."""
+    copie = tmp_path / "models" / "en_service"
     shutil.copytree(production, copie)
     return copie
 
@@ -152,8 +155,9 @@ def chemins_du_candidat_de_controle(production):
 
 def faux_lanceur(production, quality_gate_ok, recu):
     """Remplace scripts/entrainer.py : écrit le candidat (et le met en service si le gate passe)."""
-    def lanceur(chemin_feedbacks, donnees, dossier_modeles, promouvoir):
+    def lanceur(chemin_feedbacks, donnees, dossier_modeles, dossier_production, promouvoir):
         recu["feedbacks"] = charger_donnees(chemin_feedbacks)
+        recu["dossier_production"] = dossier_production
         candidat = dossier_modeles / "candidats" / "run-test"
         candidat.mkdir(parents=True)
         infos = {"run_id": "run-test", "quality_gate_ok": quality_gate_ok,
@@ -161,7 +165,7 @@ def faux_lanceur(production, quality_gate_ok, recu):
                  "resultats_test": {"F1 macro": 0.7 if quality_gate_ok else 0.3}}
         (candidat / "infos_entrainement.json").write_text(json.dumps(infos), encoding="utf-8")
         if quality_gate_ok and promouvoir:
-            publier_en_production(chemins_du_candidat_de_controle(production), dossier_modeles / "production",
+            publier_en_production(chemins_du_candidat_de_controle(production), dossier_production,
                                   "run-test", {"run_id": "run-test", "version_registre": "2"})
         return (0 if quality_gate_ok else 1), "Run MLflow : run-test"
     return lanceur
@@ -204,6 +208,7 @@ def test_reentrainement_refuse_par_le_quality_gate(production, production_copiee
     assert len(feedbacks) == 1 and feedbacks.loc[0, "usager_id"] == f"FEEDBACK_{id_prediction}"
     assert feedbacks.loc[0, CIBLE] == 2 and feedbacks.loc[0, "code_rome_vise"] == "M1607"
     assert feedbacks["nationalite_hors_ue"].isna().all()   # jamais collectée
+    assert recu["dossier_production"] == production_copiee   # le dossier de l'API, quel que soit son nom
 
 
 def test_reentrainement_mis_en_production(production, production_copiee, tmp_path, donnees_factices):
@@ -219,6 +224,47 @@ def test_reentrainement_mis_en_production(production, production_copiee, tmp_pat
         assert predire(client).json()["version_modele"] == "2"
     traces = Journal(tmp_path / "journal.db").reentrainements()
     assert [t["statut"] for t in traces] == ["mis_en_production"]
+
+
+def test_echec_du_chargement_retour_a_la_version_precedente(production, production_copiee, tmp_path,
+                                                          donnees_factices):
+    """Le script publie un modèle impossible à charger : l'API revient à la version précédente."""
+    lanceur_normal = faux_lanceur(production, True, {})
+
+    def lanceur_defectueux(chemin_feedbacks, donnees, dossier_modeles, dossier_production, promouvoir):
+        resultat = lanceur_normal(chemin_feedbacks, donnees, dossier_modeles, dossier_production, promouvoir)
+        shutil.rmtree(dossier_production / "run-test")   # le modèle publié a disparu : chargement impossible
+        return resultat
+
+    application = application_reentrainement(production, production_copiee, tmp_path, donnees_factices,
+                                             lanceur_defectueux)
+    with TestClient(application) as client:
+        prediction_avec_feedback(client)
+        reponse = client.post("/retrain", headers=ENTETE)
+        assert reponse.status_code == 500 and "version précédente" in reponse.json()["detail"]
+        assert client.get("/health").json()["version_modele"] == "controle"   # toujours servie
+        assert predire(client).status_code == 200
+    pointeur = json.loads((production_copiee / "actuelle.json").read_text(encoding="utf-8"))
+    assert pointeur["run_id"] == "controle"   # le pointeur sur disque est rétabli
+    trace, = Journal(tmp_path / "journal.db").reentrainements()
+    assert trace["statut"] == "erreur_activation"
+
+
+def test_version_coherente_si_le_modele_change_pendant_une_prediction(client):
+    """Une prédiction commencée avec l'ancien modèle annonce l'ancienne version, même si le modèle
+    est remplacé pendant le calcul (réentraînement concurrent)."""
+    application = client.app
+    modele, infos = application.state.service
+
+    class ModeleRemplaceEnCours:
+        def predict(self, tableau):
+            application.state.service = (modele, {**infos, "version_registre": "nouvelle"})
+            return modele.predict(tableau)
+
+    application.state.service = (ModeleRemplaceEnCours(), {**infos, "version_registre": "ancienne"})
+    reponse = predire(client).json()
+    assert reponse["version_modele"] == "ancienne"
+    assert client.get("/history?limite=1", headers=ENTETE).json()[0]["version_modele"] == "ancienne"
 
 
 def test_reentrainement_avec_le_vrai_script(production, production_copiee, tmp_path, donnees_factices,

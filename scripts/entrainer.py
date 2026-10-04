@@ -25,7 +25,11 @@ de l'étude ; pour un réentraînement de routine, --sans-recherche évite ce ca
 
 Réentraînement avec les feedbacks des conseillers (--feedbacks, utilisé par la route /retrain) :
 les exemples corrigés sont ajoutés à la partie ENTRAÎNEMENT seulement, après le découpage ; le jeu
-de test reste exactement celui du notebook, donc le quality gate compare les modèles à armes égales.
+de test reste exactement celui du notebook (jeu d'ACCEPTATION fixe : il sert à chaque décision de mise
+en production, ce n'est donc plus une évaluation finale « jamais vue »). Un feedback dont le profil
+(âge, diplôme, ancienneté, code ROME, synthèse) est identique à un usager du jeu de test est écarté :
+sinon, un usager du test pourrait entrer dans l'entraînement par la boucle predict → feedback.
+Passer le quality gate = respecter des critères minimaux, pas forcément faire mieux que le modèle en place.
 
 Usage :
     python scripts/entrainer.py --promouvoir                       # vraies données, mise en production
@@ -117,6 +121,18 @@ def enregistrer_matrice_confusion(y_test, classes, dossier):
     return chemin
 
 
+CHAMPS_PROFIL = ["age", "niveau_diplome", "anciennete_poste_ans", "code_rome_vise", "synthese_entretien"]
+
+
+def profils(df):
+    """Une clé texte par usager, construite sur les informations utilisées par le modèle."""
+    colonnes = df[CHAMPS_PROFIL].copy()
+    for nombre in ["age", "anciennete_poste_ans"]:
+        colonnes[nombre] = pd.to_numeric(colonnes[nombre], errors="coerce").round(2)
+    colonnes = colonnes.astype("string").fillna("").apply(lambda colonne: colonne.str.strip())
+    return colonnes.agg("|".join, axis=1)
+
+
 def etat_du_code():
     """Commit Git et présence de modifications non enregistrées (le run doit pouvoir être retracé)."""
     try:
@@ -140,6 +156,8 @@ def main():
                         help="ne rejoue pas la recherche sur grille (plus rapide : CI, réentraînement)")
     parser.add_argument("--feedbacks", default=None,
                         help="CSV des feedbacks des conseillers, ajoutés à l'entraînement seulement")
+    parser.add_argument("--production", default=None,
+                        help="dossier de production, celui de l'API (défaut : <sortie>/production)")
     parser.add_argument("--promouvoir", action="store_true",
                         help="met le modèle en production s'il passe le quality gate (désactivé par défaut)")
     args = parser.parse_args()
@@ -166,9 +184,14 @@ def main():
 
     # 1. Données
     entrainement, test = decouper(donnees_brutes)
-    n_feedbacks = 0
+    n_feedbacks = n_feedbacks_ecartes = 0
     if args.feedbacks:   # après le découpage : les feedbacks n'entrent jamais dans le jeu de test
         feedbacks = charger_donnees(args.feedbacks).reindex(columns=entrainement.columns)
+        deja_dans_le_test = profils(feedbacks).isin(set(profils(test)))
+        n_feedbacks_ecartes = int(deja_dans_le_test.sum())
+        if n_feedbacks_ecartes:
+            print(f"{n_feedbacks_ecartes} feedback(s) écarté(s) : profil identique à un usager du test")
+        feedbacks = feedbacks[~deja_dans_le_test]
         n_feedbacks = len(feedbacks)
         entrainement = pd.concat([entrainement, feedbacks], ignore_index=True)
     X_train, y_train = separer_x_y(nettoyer(entrainement))
@@ -184,6 +207,7 @@ def main():
             "git_commit": commit,
             "code_modifie_non_commite": code_modifie,
             "n_feedbacks": n_feedbacks,
+            "n_feedbacks_ecartes": n_feedbacks_ecartes,
             "feedbacks_sha256": artefacts.empreinte(args.feedbacks) if args.feedbacks else "aucun",
             "n_entrainement": len(X_train),
             "n_test": len(X_test),
@@ -215,7 +239,8 @@ def main():
         infos = {"run_id": run.info.run_id, "date": datetime.now().isoformat(timespec="seconds"),
                  "donnees": Path(args.donnees).name, "donnees_sha256": artefacts.empreinte(args.donnees),
                  "git_commit": commit, "code_modifie_non_commite": code_modifie,
-                 "n_feedbacks": n_feedbacks, "n_entrainement": len(X_train), "n_test": len(X_test),
+                 "n_feedbacks": n_feedbacks, "n_feedbacks_ecartes": n_feedbacks_ecartes,
+                 "n_entrainement": len(X_train), "n_test": len(X_test),
                  "quality_gate_ok": not echecs, "echecs_quality_gate": echecs,
                  "resultats_test": {k: round(float(v), 4) for k, v in resultats.items()}}
         dossier_candidat = Path(args.sortie) / "candidats" / run.info.run_id
@@ -238,7 +263,8 @@ def main():
             def publier_alias():
                 MlflowClient().set_registered_model_alias(nom_modele, "production", str(version))
 
-            dossier = publier_en_production(chemins, Path(args.sortie) / "production", run.info.run_id,
+            dossier_production = Path(args.production or Path(args.sortie) / "production")
+            dossier = publier_en_production(chemins, dossier_production, run.info.run_id,
                                             {"run_id": run.info.run_id, "version_registre": version},
                                             publier_alias if utiliser_registre else None)
             print(f"Quality gate respecté : version {version} mise en production "

@@ -12,6 +12,7 @@ import sys
 from pathlib import Path
 
 import mlflow
+import pandas as pd
 import pytest
 
 from cisia import artefacts
@@ -157,3 +158,19 @@ def test_feedbacks_ajoutes_a_l_entrainement_jamais_au_test(donnees_factices, tmp
     assert infos_avec["n_feedbacks"] == 3 and infos_sans["n_feedbacks"] == 0
     assert infos_avec["n_entrainement"] == infos_sans["n_entrainement"] + 3
     assert infos_avec["n_test"] == infos_sans["n_test"]   # même jeu de test : comparaison à armes égales
+
+
+def test_feedback_deja_dans_le_jeu_de_test_ecarte(donnees_factices, tmp_path):
+    """Un usager du jeu de test renvoyé par predict → feedback n'entre pas dans l'entraînement."""
+    _, test = decouper(charger_donnees(donnees_factices / "entrainement.csv"))
+    feedbacks = pd.concat([test.head(1), charger_donnees(donnees_factices / "reference.csv").head(1)])
+    feedbacks["usager_id"] = ["FEEDBACK_test", "FEEDBACK_nouveau"]
+    chemin_feedbacks = tmp_path / "feedbacks.csv"
+    feedbacks.to_csv(chemin_feedbacks, index=False)
+
+    resultat = lancer(tmp_path, "--feedbacks", str(chemin_feedbacks))
+    assert resultat.returncode == 0, resultat.stdout + resultat.stderr
+    candidat = next((tmp_path / "models" / "candidats").iterdir())
+    infos = json.loads((candidat / "infos_entrainement.json").read_text(encoding="utf-8"))
+    assert (infos["n_feedbacks"], infos["n_feedbacks_ecartes"]) == (1, 1)
+
