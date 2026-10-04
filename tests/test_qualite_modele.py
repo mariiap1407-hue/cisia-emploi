@@ -17,6 +17,7 @@ Les scores sur données factices vérifient le comportement du logiciel ; ce ne 
 estimations de la performance réelle.
 """
 
+import json
 import os
 from pathlib import Path
 
@@ -81,6 +82,15 @@ def test_quality_gate_sur_le_jeu_de_reference(modele_a_accepter):
     resultats = indicateurs(modele_a_accepter, REFERENCE)
     afficher(f"Jeu de référence : {REFERENCE.name}", resultats)
     echecs = verifier_seuils_qualite(resultats)
+    if os.getenv("CISIA_RAPPORT_GATE"):   # CI : rapport conservé avec le modèle testé (traçabilité)
+        rapport = {"modele": os.getenv("CISIA_MODELE", "modele de controle"), "reference": str(REFERENCE),
+                   "reference_sha256": artefacts.empreinte(REFERENCE),
+                   "resultats": {k: round(float(v), 4) for k, v in resultats.items()},
+                   "seuils": {k: list(v) for k, v in SEUILS_QUALITE.items()},
+                   "quality_gate_ok": not echecs, "echecs": echecs}
+        chemin = Path(os.getenv("CISIA_RAPPORT_GATE"))
+        chemin.parent.mkdir(parents=True, exist_ok=True)
+        chemin.write_text(json.dumps(rapport, ensure_ascii=False, indent=2), encoding="utf-8")
     assert not echecs, "Quality gate non respecté : " + " ; ".join(echecs)
 
 

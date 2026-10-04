@@ -1,16 +1,22 @@
-# CI/CD du projet CISIA, sur le modèle du projet M5 (2 jobs : test, puis construction de l'image).
+# CI/CD du projet CISIA, sur le modèle du projet M5 (test, puis image), complété par le déploiement.
 #
 # Différences avec M5, justifiées :
 # - les vraies données (personnelles) ne vont jamais sur GitHub : la CI entraîne un modèle de
 #   CONTRÔLE sur des données factices ; elle valide le code et la chaîne, pas la performance réelle ;
 # - le candidat entraîné est testé sur SON jeu de référence (quality gate) AVANT tout le reste ;
-# - retour du formateur sur M5 : l'image est testée AVANT d'être publiée, avec une boucle d'attente
+# - retour du formateur sur M5 : l'image est testée AVANT d'être publiée, avec une attente active
 #   sur /health (et non un « sleep » fixe) ;
-# - l'image publiée est étiquetée « controle » : le modèle de production réel est construit sur le
-#   poste (ou, dans une vraie agence, sur un serveur placé à côté des données).
+# - déploiement automatique sur un environnement de DÉMONSTRATION (Render, région Francfort) :
+#   l'image publiée (désignée par son empreinte) y est déployée puis vérifiée. Le modèle y est
+#   factice ; l'application réelle se déploierait sur un serveur de l'agence, à côté des données.
 #
-# Démonstration du quality gate : lancer le workflow à la main (Actions > CI/CD > Run workflow) avec
-# reference = data/factice/reference_derivee.csv → le gate échoue et l'image n'est pas construite.
+# Démonstration du quality gate : Actions > CI/CD > Run workflow, avec
+# reference = data/factice/reference_derivee.csv → le gate échoue ; rien n'est construit ni déployé.
+#
+# Secrets et variables à définir dans GitHub (Settings > Secrets and variables > Actions) :
+# - secret RENDER_DEPLOY_HOOK : adresse de déclenchement du déploiement (fournie par Render) ;
+# - secret CISIA_CLE_API_DEMO : clé d'API du service de démonstration (la même que sur Render) ;
+# - variable RENDER_URL : adresse publique du service (ex. https://cisia-api.onrender.com).
 
 name: CI/CD
 
@@ -23,6 +29,12 @@ on:
       reference:
         description: "Jeu de référence du quality gate (reference_derivee.csv pour la démonstration d'échec)"
         default: data/factice/reference.csv
+
+# Un nouveau push sur la même branche annule le run précédent encore en cours :
+# un ancien commit ne peut pas publier ou déployer après un plus récent
+concurrency:
+  group: ci-cd-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   test:
@@ -61,20 +73,28 @@ jobs:
       - name: Quality gate du candidat sur son jeu de référence
         run: |
           echo "Candidat : $CANDIDAT ; référence : $REFERENCE"
-          CISIA_MODELE="$CANDIDAT" CISIA_REFERENCE="$REFERENCE" \
+          CISIA_MODELE="$CANDIDAT" CISIA_REFERENCE="$REFERENCE" CISIA_RAPPORT_GATE=rapport/quality_gate.json \
             pytest -v -s tests/test_qualite_modele.py::test_quality_gate_sur_le_jeu_de_reference
 
       - name: Tests unitaires et d'intégration
         run: pytest -q
 
       - name: Préparer le modèle de contrôle pour l'image
-        run: python scripts/preparer_image_ci.py "$CANDIDAT" --sortie models/ci
+        run: |
+          python scripts/preparer_image_ci.py "$CANDIDAT" --sortie models/ci
+          cp "$CANDIDAT/infos_entrainement.json" rapport/infos_entrainement.json
 
       - name: Faire remonter le modèle de contrôle
         uses: actions/upload-artifact@v7
         with:
           name: modele-controle
           path: models/ci/
+
+      - name: Faire remonter le rapport du quality gate (traçabilité)
+        uses: actions/upload-artifact@v7
+        with:
+          name: rapport-quality-gate
+          path: rapport/
 
   build-test-push:
     needs: test   # ne démarre que si le job test (dont le quality gate) a réussi
@@ -84,6 +104,9 @@ jobs:
       packages: write
     env:
       IMAGE: ghcr.io/${{ github.repository }}/cisia-api
+    outputs:
+      image: ${{ steps.publication.outputs.image }}
+      version: ${{ steps.version.outputs.version }}
     steps:
       - uses: actions/checkout@v6
 
@@ -93,42 +116,41 @@ jobs:
           name: modele-controle
           path: models/ci/
 
-      - name: Construire l'image (sans la publier)
+      - name: Version du modèle embarqué
+        id: version
+        run: |
+          VERSION=$(python3 -c "import json; print(json.load(open('models/ci/actuelle.json'))['run_id'])")
+          echo "Version embarquée : $VERSION"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Construire l'image de l'API (sans la publier)
         run: |
           docker build --build-arg MODELE=models/ci \
             --label "org.opencontainers.image.description=API CISIA - modele de CONTROLE (donnees factices)" \
             --label "org.opencontainers.image.revision=${{ github.sha }}" \
             -t cisia-api:ci .
 
-      - name: Construire l'image MLflow de la pile
+      - name: Vérifier que l'image MLflow se construit (construction seulement, non démarrée)
         run: docker build -t cisia-mlflow:ci docker/mlflow
 
-      - name: Tester l'image AVANT publication (attente active sur /health)
+      - name: Tester l'image AVANT publication
         run: |
-          CLE=$(python3 -c "import secrets; print(secrets.token_hex(16))")
+          CLE=$(python3 -c 'import secrets; print(secrets.token_hex(16))')   # clé jetable, propre à ce test
+          echo "::add-mask::$CLE"
           docker run -d --name api-test -p 8000:8000 -e CISIA_CLE_API="$CLE" cisia-api:ci
+          python3 scripts/verifier_service.py http://127.0.0.1:8000 --cle "$CLE" \
+            --version "${{ steps.version.outputs.version }}" --essais 30 --pause 2 --retrain 503
 
-          # Attente active : jusqu'à 30 essais espacés de 2 s, au lieu d'un délai fixe
-          for essai in $(seq 1 30); do
-            if curl -fs http://127.0.0.1:8000/health; then echo; echo "Prête après $essai essai(s)"; PRETE=1; break; fi
-            sleep 2
-          done
-          if [ -z "$PRETE" ]; then docker logs api-test; exit 1; fi
+      - name: Journaux du conteneur en cas d'échec
+        if: failure()
+        run: docker logs api-test || true
 
-          # Prédiction avec la clé : 200
-          curl -fs -X POST http://127.0.0.1:8000/predict \
-            -H "X-API-Key: $CLE" -H "Content-Type: application/json" \
-            -d '{"usager": {"age": 35, "niveau_diplome": "Bac", "anciennete_poste_ans": 4.5, "code_rome_vise": "M1607", "synthese_entretien": "Projet clair, mobilite possible."}}'
-          echo
-
-          # Sans clé : 401 ; réentraînement dans l'image (sans données) : 503
-          test "$(curl -s -o /dev/null -w '%{http_code}' -X POST http://127.0.0.1:8000/predict -H 'Content-Type: application/json' -d '{}')" = 401
-          test "$(curl -s -o /dev/null -w '%{http_code}' -X POST http://127.0.0.1:8000/retrain -H "X-API-Key: $CLE")" = 503
-          echo "Image testée : santé 200, prédiction 200, sans clé 401, réentraînement 503"
-          docker rm -f api-test
+      - name: Arrêter le conteneur de test
+        if: always()
+        run: docker rm -f api-test || true
 
       - name: Authentification sur ghcr.io
-        if: github.event_name != 'pull_request'
+        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
         uses: docker/login-action@v4
         with:
           registry: ghcr.io
@@ -136,9 +158,56 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Publier l'image testée (étiquettes « controle »)
-        if: github.event_name != 'pull_request'
+        id: publication
+        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
         run: |
           docker tag cisia-api:ci "$IMAGE:controle-${GITHUB_SHA::7}"
           docker tag cisia-api:ci "$IMAGE:controle"
           docker push "$IMAGE:controle-${GITHUB_SHA::7}"
           docker push "$IMAGE:controle"
+          # Empreinte (digest) : désigne EXACTEMENT l'image testée, même si une étiquette est réutilisée
+          IMAGE_DIGEST=$(docker inspect --format='{{index .RepoDigests 0}}' "$IMAGE:controle-${GITHUB_SHA::7}")
+          echo "Image publiée : $IMAGE_DIGEST"
+          echo "image=$IMAGE_DIGEST" >> "$GITHUB_OUTPUT"
+
+  deploy-demo:
+    needs: build-test-push
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    environment:
+      name: demo-render
+      url: ${{ vars.RENDER_URL }}
+    concurrency:
+      group: deploy-demo   # un seul déploiement à la fois, jamais annulé en cours de route
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Vérifier la configuration du déploiement
+        env:
+          HOOK: ${{ secrets.RENDER_DEPLOY_HOOK }}
+          CLE: ${{ secrets.CISIA_CLE_API_DEMO }}
+          URL: ${{ vars.RENDER_URL }}
+        run: |
+          [ -n "$HOOK" ] || { echo "Secret RENDER_DEPLOY_HOOK absent"; exit 1; }
+          [ -n "$CLE" ] || { echo "Secret CISIA_CLE_API_DEMO absent"; exit 1; }
+          [ -n "$URL" ] || { echo "Variable RENDER_URL absente"; exit 1; }
+
+      - name: Déployer l'image testée sur l'environnement de démonstration
+        env:
+          HOOK: ${{ secrets.RENDER_DEPLOY_HOOK }}
+          IMAGE_REF: ${{ needs.build-test-push.outputs.image }}
+        run: |
+          echo "Déploiement de $IMAGE_REF"
+          IMAGE_URL=$(python3 -c "import urllib.parse, os; print(urllib.parse.quote(os.environ['IMAGE_REF'], safe=''))")
+          curl -fsS --max-time 30 -X POST "$HOOK&imgURL=$IMAGE_URL" > /dev/null
+          echo "Déploiement demandé à Render"
+
+      - name: Vérifier le service déployé (bonne version, prédiction, sécurité)
+        env:
+          CLE: ${{ secrets.CISIA_CLE_API_DEMO }}
+          URL: ${{ vars.RENDER_URL }}
+        run: |
+          # Render télécharge l'image puis démarre le service : jusqu'à 15 minutes d'attente
+          python3 scripts/verifier_service.py "$URL" --cle "$CLE" \
+            --version "${{ needs.build-test-push.outputs.version }}" --essais 90 --pause 10 --retrain 503

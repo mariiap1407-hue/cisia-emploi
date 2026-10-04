@@ -4,8 +4,9 @@ Dans la CI, les vraies données ne sont jamais disponibles (RGPD) : le pipeline 
 contrôle sur des données factices, le teste, puis construit l'image avec lui pour vérifier que
 l'image fonctionne (démarrage, /health, /predict). Ce modèle ne vaut rien en conditions réelles.
 
-Ce script le range dans un dossier SÉPARÉ (models/ci par défaut), jamais dans models/production :
-la règle « un modèle factice n'est jamais mis en production » reste vraie. Le format est celui
+Ce script le range dans un dossier SÉPARÉ (models/ci par défaut) ; par sécurité il refuse un dossier
+nommé « production » (simple garde-fou sur le nom, pas une protection de tous les chemins possibles :
+c'est la CI qui fixe la destination, models/ci, sur un runner éphémère). Le format est celui
 qu'attend l'API (dossier du modèle + actuelle.json) ; l'image le copie grâce à l'argument de
 construction MODELE (docker build --build-arg MODELE=models/ci).
 
