@@ -23,10 +23,15 @@ La correction est apprise sur des probabilités HORS PLI, jamais sur les prédic
 sur ses propres données d'entraînement. La recherche sur grille est rejouée pour la traçabilité
 de l'étude ; pour un réentraînement de routine, --sans-recherche évite ce calcul inutile.
 
+Réentraînement avec les feedbacks des conseillers (--feedbacks, utilisé par la route /retrain) :
+les exemples corrigés sont ajoutés à la partie ENTRAÎNEMENT seulement, après le découpage ; le jeu
+de test reste exactement celui du notebook, donc le quality gate compare les modèles à armes égales.
+
 Usage :
     python scripts/entrainer.py --promouvoir                       # vraies données, mise en production
     python scripts/entrainer.py                                    # vraies données, candidat seulement
     python scripts/entrainer.py --donnees data/factice/entrainement.csv --sans-recherche   # contrôle (CI)
+    python scripts/entrainer.py --feedbacks feedbacks.csv --sans-recherche --promouvoir    # réentraînement
 """
 
 import argparse
@@ -133,6 +138,8 @@ def main():
                         help="dossier des modèles (candidats, production)")
     parser.add_argument("--sans-recherche", action="store_true",
                         help="ne rejoue pas la recherche sur grille (plus rapide : CI, réentraînement)")
+    parser.add_argument("--feedbacks", default=None,
+                        help="CSV des feedbacks des conseillers, ajoutés à l'entraînement seulement")
     parser.add_argument("--promouvoir", action="store_true",
                         help="met le modèle en production s'il passe le quality gate (désactivé par défaut)")
     args = parser.parse_args()
@@ -159,6 +166,11 @@ def main():
 
     # 1. Données
     entrainement, test = decouper(donnees_brutes)
+    n_feedbacks = 0
+    if args.feedbacks:   # après le découpage : les feedbacks n'entrent jamais dans le jeu de test
+        feedbacks = charger_donnees(args.feedbacks).reindex(columns=entrainement.columns)
+        n_feedbacks = len(feedbacks)
+        entrainement = pd.concat([entrainement, feedbacks], ignore_index=True)
     X_train, y_train = separer_x_y(nettoyer(entrainement))
     X_test, y_test = separer_x_y(nettoyer(test))
     regle = charger_regle(args.regle)
@@ -171,6 +183,8 @@ def main():
             "donnees_factices": donnees_factices,
             "git_commit": commit,
             "code_modifie_non_commite": code_modifie,
+            "n_feedbacks": n_feedbacks,
+            "feedbacks_sha256": artefacts.empreinte(args.feedbacks) if args.feedbacks else "aucun",
             "n_entrainement": len(X_train),
             "n_test": len(X_test),
             **{k.replace("modele__", ""): v for k, v in REGLAGES_RETENUS.items()},
@@ -201,7 +215,8 @@ def main():
         infos = {"run_id": run.info.run_id, "date": datetime.now().isoformat(timespec="seconds"),
                  "donnees": Path(args.donnees).name, "donnees_sha256": artefacts.empreinte(args.donnees),
                  "git_commit": commit, "code_modifie_non_commite": code_modifie,
-                 "quality_gate_ok": not echecs,
+                 "n_feedbacks": n_feedbacks, "n_entrainement": len(X_train), "n_test": len(X_test),
+                 "quality_gate_ok": not echecs, "echecs_quality_gate": echecs,
                  "resultats_test": {k: round(float(v), 4) for k, v in resultats.items()}}
         dossier_candidat = Path(args.sortie) / "candidats" / run.info.run_id
         chemins = artefacts.sauvegarder(dossier_candidat, modele, correction, regle, infos)

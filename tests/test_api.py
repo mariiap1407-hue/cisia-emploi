@@ -1,11 +1,13 @@
 """L'API de bout en bout, avec un modèle de contrôle (données factices), une base et une clé temporaires."""
 
 import json
+import shutil
 from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
 
+from api.journal import Journal
 from api.main import creer_application
 from cisia import artefacts
 from cisia.decision import charger_regle
@@ -70,10 +72,26 @@ def test_prediction_avec_informations_manquantes(client):
     assert predire(client, usager).status_code == 200
 
 
+def test_cle_avec_accents_refusee_proprement(client):
+    # Une clé reçue avec des caractères non ASCII est une clé fausse : 401, pas une erreur 500
+    entete = {"X-API-Key": "clé-fausse".encode("latin-1")}
+    assert client.get("/history", headers=entete).status_code == 401
+
+
+def test_sante_sans_cle_configuree(production, tmp_path):
+    # Modèle chargé mais aucune clé : /predict refuserait tout, donc le service n'est pas prêt
+    with TestClient(creer_application(production, tmp_path / "journal.db", cle_api="")) as client:
+        reponse = client.get("/health")
+        assert reponse.status_code == 503
+        assert reponse.json()["modele_charge"] is True and reponse.json()["cle_configuree"] is False
+
+
 def test_entree_invalide_refusee_et_journalisee_sans_valeur(client):
     reponse = predire(client, {**USAGER, "age": -5}, id_session="S-3")
     assert reponse.status_code == 422
-    assert reponse.json()["detail"][0]["champ"][-1] == "age"   # le champ en cause est indiqué
+    # Champ en cause sans le préfixe technique « body », message en français, sans la valeur reçue
+    assert reponse.json()["detail"] == [{"champ": ["usager", "age"], "type": "greater_than_equal",
+                                         "message": "Doit être supérieur ou égal à 16."}]
     dernier = client.get("/history", headers=ENTETE).json()[0]
     assert dernier["statut"] == "invalide" and dernier["id_session"] == "S-3"
     assert dernier["entrees"] is None   # aucune valeur d'une requête refusée n'est conservée
@@ -116,6 +134,110 @@ def test_sans_modele_en_production(tmp_path):
     with TestClient(creer_application(tmp_path / "vide", tmp_path / "journal.db", cle_api=CLE)) as client:
         assert client.get("/health").status_code == 503   # pas prête : aucun modèle chargé
         assert predire(client).status_code == 503
+
+
+# --- Réentraînement (/retrain) ---------------------------------------------------------------
+
+@pytest.fixture
+def production_copiee(production, tmp_path):
+    """Copie de la production de contrôle : un test peut la modifier sans gêner les autres."""
+    copie = tmp_path / "models" / "production"
+    shutil.copytree(production, copie)
+    return copie
+
+
+def chemins_du_candidat_de_controle(production):
+    return {nom: production.parent / "candidat" / fichier for nom, fichier in artefacts.FICHIERS.items()}
+
+
+def faux_lanceur(production, quality_gate_ok, recu):
+    """Remplace scripts/entrainer.py : écrit le candidat (et le met en service si le gate passe)."""
+    def lanceur(chemin_feedbacks, donnees, dossier_modeles, promouvoir):
+        recu["feedbacks"] = charger_donnees(chemin_feedbacks)
+        candidat = dossier_modeles / "candidats" / "run-test"
+        candidat.mkdir(parents=True)
+        infos = {"run_id": "run-test", "quality_gate_ok": quality_gate_ok,
+                 "echecs_quality_gate": [] if quality_gate_ok else ["F1 macro = 0.300 (seuil min : 0.62)"],
+                 "resultats_test": {"F1 macro": 0.7 if quality_gate_ok else 0.3}}
+        (candidat / "infos_entrainement.json").write_text(json.dumps(infos), encoding="utf-8")
+        if quality_gate_ok and promouvoir:
+            publier_en_production(chemins_du_candidat_de_controle(production), dossier_modeles / "production",
+                                  "run-test", {"run_id": "run-test", "version_registre": "2"})
+        return (0 if quality_gate_ok else 1), "Run MLflow : run-test"
+    return lanceur
+
+
+def application_reentrainement(production, production_copiee, tmp_path, donnees_factices, lanceur):
+    return creer_application(production_copiee, tmp_path / "journal.db", cle_api=CLE, lanceur=lanceur,
+                             donnees_entrainement=donnees_factices / "entrainement.csv")
+
+
+def prediction_avec_feedback(client, classe=2):
+    id_prediction = predire(client).json()["id_prediction"]
+    client.post("/feedback", json={"id_prediction": id_prediction, "classe_reelle": classe}, headers=ENTETE)
+    return id_prediction
+
+
+def test_reentrainement_sans_feedback_refuse(production, production_copiee, tmp_path, donnees_factices):
+    application = application_reentrainement(production, production_copiee, tmp_path, donnees_factices,
+                                             faux_lanceur(production, True, {}))
+    with TestClient(application) as client:
+        assert client.post("/retrain", headers=ENTETE).status_code == 409
+        assert client.post("/retrain").status_code == 401
+
+
+def test_reentrainement_refuse_par_le_quality_gate(production, production_copiee, tmp_path, donnees_factices):
+    recu = {}
+    application = application_reentrainement(production, production_copiee, tmp_path, donnees_factices,
+                                             faux_lanceur(production, False, recu))
+    with TestClient(application) as client:
+        id_prediction = prediction_avec_feedback(client, classe=2)
+        reponse = client.post("/retrain", headers=ENTETE)
+        assert reponse.status_code == 200
+        resultat = reponse.json()
+        assert resultat["statut"] == "refuse_quality_gate" and resultat["echecs_quality_gate"]
+        assert resultat["version_modele"] == resultat["version_modele_avant"] == "controle"
+        assert client.get("/health").json()["version_modele"] == "controle"   # production inchangée
+
+    # Le script a reçu le feedback au format du fichier d'origine, avec la classe OBSERVÉE
+    feedbacks = recu["feedbacks"]
+    assert len(feedbacks) == 1 and feedbacks.loc[0, "usager_id"] == f"FEEDBACK_{id_prediction}"
+    assert feedbacks.loc[0, CIBLE] == 2 and feedbacks.loc[0, "code_rome_vise"] == "M1607"
+    assert feedbacks["nationalite_hors_ue"].isna().all()   # jamais collectée
+
+
+def test_reentrainement_mis_en_production(production, production_copiee, tmp_path, donnees_factices):
+    application = application_reentrainement(production, production_copiee, tmp_path, donnees_factices,
+                                             faux_lanceur(production, True, {}))
+    with TestClient(application) as client:
+        prediction_avec_feedback(client)
+        resultat = client.post("/retrain", json={"promouvoir": True}, headers=ENTETE).json()
+        assert resultat["statut"] == "mis_en_production"
+        assert (resultat["version_modele_avant"], resultat["version_modele"]) == ("controle", "2")
+        # Le nouveau modèle est chargé sans redémarrer l'API
+        assert client.get("/health").json()["version_modele"] == "2"
+        assert predire(client).json()["version_modele"] == "2"
+    traces = Journal(tmp_path / "journal.db").reentrainements()
+    assert [t["statut"] for t in traces] == ["mis_en_production"]
+
+
+def test_reentrainement_avec_le_vrai_script(production, production_copiee, tmp_path, donnees_factices,
+                                           monkeypatch):
+    """Le vrai script, sur données factices, sans mise en production (refusée pour des données factices)."""
+    monkeypatch.setenv("MLFLOW_TRACKING_URI", f"sqlite:///{(tmp_path / 'mlflow.db').as_posix()}")
+    application = creer_application(production_copiee, tmp_path / "journal.db", cle_api=CLE,
+                                    donnees_entrainement=donnees_factices / "entrainement.csv")
+    with TestClient(application) as client:
+        prediction_avec_feedback(client)
+        reponse = client.post("/retrain", json={"promouvoir": False}, headers=ENTETE)
+        assert reponse.status_code == 200, reponse.text
+        resultat = reponse.json()
+        assert resultat["statut"] in ("candidat_non_promu", "refuse_quality_gate")
+        assert resultat["n_feedbacks"] == 1 and "F1 macro" in resultat["resultats_test"]
+        assert resultat["version_modele"] == "controle"   # pas de mise en production demandée
+    infos = json.loads((production_copiee.parent / "candidats" / resultat["run_id"]
+                        / "infos_entrainement.json").read_text(encoding="utf-8"))
+    assert infos["n_feedbacks"] == 1
 
 
 def pd_manquant(valeur):

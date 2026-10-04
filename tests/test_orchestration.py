@@ -134,3 +134,26 @@ def test_alias_en_echec_ancienne_version_reste_en_service(donnees_factices, tmp_
     # L'API et le registre continuent de désigner la même version : la précédente
     assert dossier_en_service(production) == production / "version_a"
     assert not list(production.glob("*.tmp"))
+
+
+def test_feedbacks_ajoutes_a_l_entrainement_jamais_au_test(donnees_factices, tmp_path):
+    """Réentraînement (/retrain) : les feedbacks rejoignent l'entraînement ; le jeu de test ne change pas."""
+    feedbacks = charger_donnees(donnees_factices / "reference.csv").head(3)
+    feedbacks["usager_id"] = [f"FEEDBACK_{i}" for i in range(3)]
+    chemin_feedbacks = tmp_path / "feedbacks.csv"
+    feedbacks.to_csv(chemin_feedbacks, index=False)
+
+    (tmp_path / "sans").mkdir()
+    (tmp_path / "avec").mkdir()
+    sans = lancer(tmp_path / "sans")
+    avec = lancer(tmp_path / "avec", "--feedbacks", str(chemin_feedbacks))
+    assert sans.returncode == avec.returncode == 0, avec.stdout + avec.stderr
+
+    def infos(dossier):
+        candidat = next((dossier / "models" / "candidats").iterdir())
+        return json.loads((candidat / "infos_entrainement.json").read_text(encoding="utf-8"))
+
+    infos_sans, infos_avec = infos(tmp_path / "sans"), infos(tmp_path / "avec")
+    assert infos_avec["n_feedbacks"] == 3 and infos_sans["n_feedbacks"] == 0
+    assert infos_avec["n_entrainement"] == infos_sans["n_entrainement"] + 3
+    assert infos_avec["n_test"] == infos_sans["n_test"]   # même jeu de test : comparaison à armes égales

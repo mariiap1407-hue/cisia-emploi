@@ -51,3 +51,26 @@ def test_demande_et_feedback():
     assert DemandePrediction(usager=USAGER, id_session="S-1").id_session == "S-1"
     with pytest.raises(ValidationError):
         Feedback(id_prediction="abc", classe_reelle=3)
+
+
+def erreurs_de(usager):
+    with pytest.raises(ValidationError) as erreur:
+        DemandePrediction(usager=usager)
+    # FastAPI ajoute « body » devant le chemin : on le reproduit ici
+    return erreurs_sans_valeurs([{**e, "loc": ("body", *e["loc"])} for e in erreur.value.errors()])
+
+
+def test_messages_en_francais_et_chemin_sans_body():
+    erreur, = erreurs_de({**USAGER, "niveau_diplome": "Doctorat"})
+    assert erreur["champ"] == ["usager", "niveau_diplome"]
+    assert erreur["message"] == ("Valeur non autorisée. Valeurs possibles : "
+                                 "'Sans diplôme', 'Bac', 'Bac+2' ou 'Bac+5'.")
+    erreur, = erreurs_de({**USAGER, "code_rome_vise": "M16"})
+    assert erreur["message"].startswith("Format invalide : une lettre suivie de 4 chiffres")
+    erreur, = erreurs_de({**USAGER, "nationalite_hors_ue": 1})
+    assert erreur["type"] == "extra_forbidden" and "pas collectée" in erreur["message"]
+
+
+def test_type_inconnu_message_anglais_conserve():
+    erreur, = erreurs_sans_valeurs([{"type": "type_rare", "loc": ("body", "x"), "msg": "Rare error"}])
+    assert erreur == {"champ": ["x"], "type": "type_rare", "message": "Rare error"}
