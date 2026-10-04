@@ -26,7 +26,10 @@ RACINE = Path(__file__).resolve().parents[1]
 
 
 def lancer(dossier, *options, donnees="data/factice/entrainement.csv"):
-    environnement = {**os.environ, "MLFLOW_TRACKING_URI": f"sqlite:///{(dossier / 'mlflow.db').as_posix()}"}
+    # Environnement du test fixé ici (et non hérité) : base MLflow temporaire, registre activé
+    # (la CI désactive le registre pour son propre entraînement avec USE_REGISTRY=false)
+    environnement = {**os.environ, "MLFLOW_TRACKING_URI": f"sqlite:///{(dossier / 'mlflow.db').as_posix()}",
+                     "USE_REGISTRY": "true"}
     return subprocess.run(
         [sys.executable, "scripts/entrainer.py", "--donnees", str(donnees),
          "--sans-recherche", "--sortie", str(dossier / "models"), *options],
