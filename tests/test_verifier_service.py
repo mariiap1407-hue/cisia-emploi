@@ -18,7 +18,7 @@ RACINE = Path(__file__).resolve().parents[1]
 CLE = "cle-de-test"
 
 
-def faux_service(version_sante, version_prediction, classe):
+def faux_service(version_sante, version_prediction, classe, code_sante=200):
     class Gestionnaire(BaseHTTPRequestHandler):
         def log_message(self, *args):
             pass
@@ -32,7 +32,8 @@ def faux_service(version_sante, version_prediction, classe):
             self.wfile.write(corps)
 
         def do_GET(self):
-            self.repondre(200, {"statut": "ok", "version_modele": version_sante})
+            self.repondre(code_sante, {"statut": "ok" if code_sante == 200 else "indisponible",
+                                       "version_modele": version_sante})
 
         def do_POST(self):
             self.rfile.read(int(self.headers.get("Content-Length", 0)))
@@ -76,3 +77,15 @@ def test_service_absent():
         port = s.getsockname()[1]
     resultat = verifier(f"http://127.0.0.1:{port}", "--essais", "2", "--pause", "0.1")
     assert resultat.returncode == 1 and "ÉCHEC" in resultat.stdout
+
+
+def test_delai_maximal_depasse():
+    """Service jamais prêt (/health 503) : au bout de --duree-max, échec, sans passer à la prédiction."""
+    serveur = faux_service("controle-1", "controle-1", 1, code_sante=503)
+    try:
+        url = f"http://127.0.0.1:{serveur.server_address[1]}"
+        resultat = verifier(url, "--essais", "1000", "--pause", "0.1", "--duree-max", "1")
+        assert resultat.returncode == 1, resultat.stdout + resultat.stderr
+        assert "délai maximal" in resultat.stdout and "Prédiction" not in resultat.stdout
+    finally:
+        serveur.shutdown()

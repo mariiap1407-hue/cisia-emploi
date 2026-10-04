@@ -63,19 +63,25 @@ def main():
     args = parser.parse_args()
     url = args.url.rstrip("/")
 
-    # 1-2. Disponibilité (et bonne version), avec attente active bornée (essais ET durée totale)
-    debut = time.monotonic()
+    # 1-2. Disponibilité (et bonne version), avec attente active bornée : nombre d'essais ET durée
+    # totale. La durée est stricte : délai de chaque requête et pause plafonnés au temps restant.
+    attendue = f" avec la version {args.version}" if args.version else ""
+    fin = None if args.duree_max is None else time.monotonic() + args.duree_max
+
+    def temps_restant():
+        return float("inf") if fin is None else fin - time.monotonic()
+
     for essai in range(1, args.essais + 1):
-        if args.duree_max is not None and time.monotonic() - debut > args.duree_max:
-            break
-        code, sante = appeler("GET", f"{url}/health", delai=10)
+        if temps_restant() <= 0:
+            echec(f"/health : délai maximal de {args.duree_max:g} s dépassé sans réponse 200{attendue}")
+        code, sante = appeler("GET", f"{url}/health", delai=min(10, temps_restant()))
         if code == 200 and (args.version is None or (sante or {}).get("version_modele") == args.version):
             print(f"Santé 200 après {essai} essai(s) : {sante}")
             break
         print(f"Essai {essai} : code {code}, version {(sante or {}).get('version_modele')}")
-        time.sleep(args.pause)
+        time.sleep(max(0, min(args.pause, temps_restant())))
     else:
-        echec(f"/health n'a pas répondu 200{' avec la version ' + args.version if args.version else ''}")
+        echec(f"/health n'a pas répondu 200{attendue} en {args.essais} essai(s)")
 
     # 3. Prédiction avec la clé : contenu vérifié
     code, prediction = appeler("POST", f"{url}/predict", args.cle, {"usager": USAGER, "id_session": "ci"})
