@@ -1,14 +1,16 @@
 # Pile CISIA (depuis la racine du projet), sur le modèle du projet M5 :
-#   docker compose up -d --build     construire et démarrer (MLflow, puis l'API)
-#   docker compose ps                état : les deux services « healthy »
-#   docker compose logs -f api       journaux de l'API
-#   docker compose down              arrêter (journal et base MLflow conservés)
+#   docker compose up -d --build --wait     construire, démarrer et attendre que tout soit « healthy »
+#   docker compose ps                       état des services
+#   docker compose logs -f api              journaux de l'API
+#   docker compose down                     arrêter (journal et base MLflow conservés)
 #
-# - api    : http://localhost:8000/docs — le modèle est COPIÉ dans l'image : l'API ne dépend
-#            pas du serveur MLflow pour prédire (elle reste disponible s'il tombe).
-# - mlflow : http://localhost:5000 — serveur de suivi et registre des modèles de la pile.
-#            Base et artefacts dans ./mlflow-data (ignoré par Git). Il démarre vide ; pour y
-#            enregistrer un entraînement : MLFLOW_TRACKING_URI=http://localhost:5000
+# - api    : http://127.0.0.1:8000/docs — le modèle est COPIÉ dans l'image : l'API ne dépend pas
+#            du serveur MLflow, ni pour démarrer ni pour prédire (un conseiller garde ses
+#            prédictions même si MLflow est en panne). Pas de « depends_on » pour cette raison.
+# - mlflow : http://127.0.0.1:5000 — serveur de suivi et registre des modèles de la pile.
+#            Base et artefacts dans ./mlflow-data (ignoré par Git). Pour y enregistrer un
+#            entraînement : MLFLOW_TRACKING_URI=http://localhost:5000
+# Ports ouverts sur ce poste seulement (127.0.0.1) : MLflow n'a pas d'authentification.
 # La clé d'API est lue dans .env (jamais versionné, jamais copié dans l'image).
 # L'interface Streamlit sera ajoutée ici au bloc 9.
 
@@ -18,31 +20,21 @@ services:
     image: cisia-api:local
     container_name: cisia-api
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"
     env_file:
       - .env
     volumes:
       # Journal, historique et feedbacks : hors de l'image, conservés entre deux redémarrages
       - journal:/app/outputs
-    depends_on:
-      mlflow:
-        condition: service_healthy   # comme en M5 : la pile démarre dans l'ordre
     restart: unless-stopped
     # Contrôle de santé : défini dans le Dockerfile (/health = modèle chargé ET clé configurée)
 
   mlflow:
-    image: python:3.12-slim
+    build: ./docker/mlflow
+    image: cisia-mlflow:local
     container_name: cisia-mlflow
     ports:
-      - "5000:5000"
-    command:
-      - sh
-      - -c
-      - >-
-        pip install --no-cache-dir mlflow==3.16.1
-        && mlflow server --host 0.0.0.0 --port 5000
-        --backend-store-uri sqlite:////mlflow-data/mlflow.db
-        --artifacts-destination /mlflow-data/artifacts
+      - "127.0.0.1:5000:5000"
     volumes:
       - ./mlflow-data:/mlflow-data
     healthcheck:
@@ -50,7 +42,7 @@ services:
       interval: 15s
       timeout: 5s
       retries: 5
-      start_period: 120s   # MLflow est installé au démarrage du conteneur (comme en M5)
+      start_period: 30s
     restart: unless-stopped
 
 volumes:
