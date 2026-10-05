@@ -10,7 +10,7 @@ délai probable de retour à l'emploi d'un usager et recommande un niveau d'acco
 | 2 | plus de 12 mois | accompagnement renforcé à examiner |
 
 **La décision reste celle du conseiller.** Le modèle (LightGBM + TF-IDF sur la synthèse d'entretien,
-probabilités recalibrées, règle de décision explicite) n'utilise que l'âge, le diplôme, l'ancienneté, le
+probabilité de la classe 2 recalibrée, règle de décision explicite) n'utilise que l'âge, le diplôme, l'ancienneté, le
 métier visé et la synthèse de l'entretien : ni nationalité, ni commune, ni statut d'allocataire.
 
 L'étude complète (données, choix du modèle, évaluation, éthique, architecture) est dans le **notebook**,
@@ -24,60 +24,86 @@ CI/CD et suivi en production.
 
 ## Démarrage rapide
 
-### Prérequis
-- Python 3.12 (environnement conda `exam`) ;
-- Docker Desktop (facultatif, pour la pile complète).
-
-### Installation
+### Prérequis et installation
+Python 3.12 (environnement conda `exam`) ; Docker Desktop pour la pile complète (facultatif).
 ```bash
 pip install -r requirements-dev.txt
 pip install -e .
 ```
-Créer un fichier `.env` à la racine (jamais versionné) :
+Créer un fichier `.env` à la racine (modèle : `.env.exemple` ; jamais versionné) :
 ```
-CISIA_CLE_API=<une clé de votre choix>
-```
-
-### Entraîner le modèle
-```bash
-python scripts/entrainer.py --promouvoir        # vraies données (data/raw/), mise en production si le quality gate passe
-python scripts/entrainer.py --donnees data/factice/entrainement.csv --sans-recherche   # données factices (contrôle)
-mlflow ui                                        # suivi des entraînements : http://127.0.0.1:5000
+CISIA_CLE_API=<une clé longue et aléatoire>
 ```
 
-### Lancer l'application
+### Parcours A — démonstration sur données factices (depuis un dépôt vierge)
+Aucune donnée réelle n'est nécessaire. Le modèle obtenu ne vaut rien en conditions réelles : il sert à
+faire tourner la chaîne (c'est ce que fait la CI).
 ```bash
-uvicorn api.main:app --reload                    # API : http://127.0.0.1:8000/docs
-streamlit run app/interface.py                   # interface conseiller PHARE : http://127.0.0.1:8501
+python scripts/generer_donnees_factices.py                       # crée data/factice/*.csv
+python scripts/entrainer.py --donnees data/factice/entrainement.csv --sans-recherche
+python scripts/preparer_image_ci.py models/candidats/<run_id> --sortie models/ci   # <run_id> affiché par l'entraînement
 ```
-Ou toute la pile avec Docker (API, interface, serveur MLflow) :
+Puis lancer l'API sur ce modèle de contrôle, en ajoutant au `.env` : `CISIA_PRODUCTION=models/ci`.
+Un modèle entraîné sur des données factices ne peut jamais être mis dans `models/production` (refusé
+par les scripts).
+
+### Parcours B — données réelles (poste autorisé uniquement)
+Le fichier de données (`data/raw/dataset_trajectoire_emploi.csv`) n'est pas dans le dépôt.
+```bash
+python scripts/entrainer.py --promouvoir      # mise en production dans models/production si le quality gate passe
+```
+
+### Lancer l'application sur le poste
+```bash
+uvicorn api.main:app --reload                 # API : http://127.0.0.1:8000/docs
+streamlit run app/interface.py                # interface conseiller PHARE : http://127.0.0.1:8501
+mlflow ui                                     # historique des entraînements (base mlflow.db du poste)
+```
+Le journal des prédictions est `outputs/cisia.db`.
+
+### Lancer la pile Docker (API, interface, serveur MLflow)
 ```bash
 docker compose up -d --build --wait
 ```
+L'image de l'API embarque le modèle de `models/production` (parcours B). Différences avec le poste :
+- le journal est dans le **volume Docker `journal`** (pas dans `outputs/cisia.db` du poste) ;
+- le serveur MLflow de la pile (http://127.0.0.1:5000) a **sa propre base** (`./mlflow-data`), distincte
+  de `mlflow.db` du poste. Pour y enregistrer un entraînement : `MLFLOW_TRACKING_URI=http://localhost:5000`.
 
 ### Suivi du modèle
+Sur le poste (journal `outputs/cisia.db`, version en service lue dans `models/production`) :
 ```bash
 python scripts/suivi.py --reference data/raw/dataset_trajectoire_emploi.csv
 ```
+Le rapport (`outputs/suivi/dernier_rapport.json`) est servi par `/suivi` et affiché dans la page « Suivi ».
+Code de sortie : 0 = aucune alerte, 1 = alerte « attention », 2 = alerte « critique ».
+
+Sous Docker, le script n'est pas dans l'image : copier le journal sur le poste, produire le rapport, puis
+le remettre dans le volume (procédure manuelle du prototype) :
+```bash
+docker cp cisia-api:/app/outputs/cisia.db outputs/journal_docker.db
+python scripts/suivi.py --base outputs/journal_docker.db --sortie outputs/suivi_docker --production models/production
+docker cp outputs/suivi_docker/. cisia-api:/app/outputs/suivi/
+```
+
 Démonstration sur des journaux factices (service sain / service dégradé) :
 ```bash
 python scripts/generer_journal_factice.py
 python scripts/suivi.py --base outputs/suivi_demo/journal_degrade.db --reference data/factice/entrainement.csv
 ```
-Code de sortie : 0 = aucune alerte, 1 = alerte « attention », 2 = alerte « critique ». Le rapport est aussi
-affiché dans la page « Suivi » de l'interface.
 
 ### Tests
 ```bash
 ruff check .
-pytest
+pytest            # génère les données factices si besoin
 ```
 
 ---
 
 ## Routes de l'API
 
-Toutes les routes sauf `/health` exigent l'en-tête `X-API-Key`. Documentation interactive : `/docs`.
+Les routes métier exigent l'en-tête `X-API-Key` ; `/health` et la documentation (`/docs`,
+`/openapi.json`) restent accessibles sans clé.
 
 | Route | Rôle |
 |---|---|
@@ -121,8 +147,11 @@ Variables d'environnement : `CISIA_CLE_API`, `CISIA_PRODUCTION`, `CISIA_BASE`, `
 À chaque push, trois jobs :
 1. **test** : ruff, données factices, entraînement d'un modèle de contrôle, **quality gate**
    (erreurs critiques ≤ 10 %, rappel de la classe 2 ≥ 60 %, F1 macro ≥ 0,62), tests ;
-2. **build-test-push** : images construites, **testées avant publication**, publiées sur `ghcr.io` ;
-3. **deploy-demo** : déploiement de l'API de démonstration sur Render (région Francfort), puis vérification.
+2. **build-test-push** : images de l'API, de l'interface et de MLflow construites ; l'API est **testée avant
+   publication** (santé, prédiction, sécurité) et l'interface testée au démarrage ; images de l'API et de
+   l'interface publiées sur `ghcr.io` (l'image MLflow est seulement construite) ;
+3. **deploy-demo** : déploiement de l'API puis de l'interface de démonstration sur Render (région
+   Francfort), avec vérification.
 
 Démonstration d'échec du quality gate : *Actions > CI/CD > Run workflow* avec
 `reference = data/factice/reference_derivee.csv` → le gate échoue, rien n'est construit ni déployé.
@@ -142,6 +171,10 @@ Une modification qui ne touche que la documentation peut être poussée sans rel
   (SSO) et droits par rôle.
 - **Suivi** : rapport lancé à la main (planification prévue en production) ; seuils de départ à
   recalibrer sur du trafic réel ; profil de référence recalculé depuis les données d'entraînement.
+- **Historique MLflow propre au poste** : les runs enregistrés dans `mlflow.db` référencent des chemins
+  d'artefacts absolus (Windows) ; copier la base sur une autre machine ne suffit pas pour retrouver les
+  modèles. Sur une autre machine, on recrée de nouveaux runs (parcours A ou B) ; la restauration de
+  l'historique existant n'est pas prise en charge (V2 : un serveur MLflow partagé).
 - **Outillage** : actions GitHub épinglées par version majeure ; dépendances indirectes de l'image
   MLflow non figées ; avertissement MLflow sur les annotations de type de `predict` (non traité :
   l'ajout activerait la validation des entrées par MLflow et modifierait le modèle sérialisé).
