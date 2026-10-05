@@ -30,7 +30,8 @@ CI/CD et suivi en production.
 Démonstration sur Render (offre gratuite, région Francfort) : **modèle de contrôle entraîné sur des
 données factices**, journal éphémère, données fictives uniquement. Les services s'endorment après
 15 minutes sans visite : le premier accès peut prendre environ une minute, et la première analyse peut
-échouer le temps que l'API se réveille (il suffit de recommencer).
+échouer le temps que l'API se réveille (il suffit de recommencer). La page « Suivi » n'y est pas alimentée :
+le suivi se démontre sur le poste (voir plus bas).
 
 ---
 
@@ -55,7 +56,8 @@ python scripts/generer_donnees_factices.py                       # crée data/fa
 python scripts/entrainer.py --donnees data/factice/entrainement.csv --sans-recherche
 python scripts/preparer_image_ci.py models/candidats/<run_id> --sortie models/ci   # <run_id> affiché par l'entraînement
 ```
-Puis lancer l'API sur ce modèle de contrôle, en ajoutant au `.env` : `CISIA_PRODUCTION=models/ci`.
+Puis lancer l'API sur ce modèle de contrôle, en ajoutant au `.env` : `CISIA_PRODUCTION=models/ci`
+(à retirer pour revenir au modèle réel du parcours B).
 Un modèle entraîné sur des données factices ne peut jamais être mis dans `models/production` (refusé
 par les scripts).
 
@@ -77,7 +79,8 @@ Le journal des prédictions est `outputs/cisia.db`.
 ```bash
 docker compose up -d --build --wait
 ```
-Arrêter d'abord `uvicorn` et `streamlit` lancés sur le poste : ils utilisent les mêmes ports (8000, 8501),
+Arrêter d'abord `uvicorn`, `streamlit` et `mlflow ui` lancés sur le poste : ils utilisent les mêmes ports
+(8000, 8501, 5000),
 et le conteneur concerné resterait à l'état « Created ». L'image de l'API embarque le modèle de `models/production` (parcours B). Différences avec le poste :
 - le journal est dans le **volume Docker `journal`** (pas dans `outputs/cisia.db` du poste) ;
 - le serveur MLflow de la pile (http://127.0.0.1:5000) a **sa propre base** (`./mlflow-data`), distincte
@@ -95,7 +98,7 @@ Sous Docker, le script n'est pas dans l'image : copier le journal sur le poste, 
 le remettre dans le volume (procédure manuelle du prototype, vérifiée le 05/10) :
 ```bash
 docker cp cisia-api:/app/outputs/cisia.db outputs/journal_docker.db
-python scripts/suivi.py --base outputs/journal_docker.db --sortie outputs/suivi_docker --production models/production
+python scripts/suivi.py --base outputs/journal_docker.db --sortie outputs/suivi_docker --production models/production --reference data/raw/dataset_trajectoire_emploi.csv
 docker cp outputs/suivi_docker/. cisia-api:/app/outputs/suivi/
 ```
 
