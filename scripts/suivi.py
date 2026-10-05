@@ -61,7 +61,8 @@ def afficher(rapport):
         print(f"  [{alerte['niveau'].upper()}] {alerte['indicateur']} : {alerte['message']}{detail}")
     non_evaluables = rapport.get("non_evaluables") or []
     print(f"\n{len(non_evaluables)} indicateur(s) non évaluable(s)"
-          + (" — aucune alerte ne signifie pas que tout va bien" if non_evaluables else ""))
+          + (" — aucune alerte ne signifie pas que tout va bien"
+             if non_evaluables and not rapport["alertes"] else ""))
     for element in non_evaluables:
         print(f"  [NON ÉVALUABLE] {element['indicateur']} : {element['raison']}")
 

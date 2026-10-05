@@ -622,7 +622,8 @@ def page_suivi():
     tuiles[1].metric("Latence (95e centile)",
                      f"{service['latence']['p95_ms']:.0f} ms" if service.get("latence") else "—")
     tuiles[2].metric("Accord conseillers / modèle", pourcentage(accord.get("taux_accord")))
-    tuiles[3].metric("Erreurs critiques observées", pourcentage(performance.get("Erreurs critiques (2→0)")))
+    tuiles[3].metric("Erreurs critiques (modèle en service)",
+                     pourcentage(performance.get("Erreurs critiques (2→0)")))
 
     # Alertes
     alertes = alertes_triees(rapport)
@@ -694,12 +695,20 @@ def page_suivi():
                     f"{periode.get('etiquettes_jours', '—')} jours")
         for source, nombre in (performance.get("par_source") or {}).items():
             st.markdown(f"- {escape(source)} : {nombre}")
-        mesures = [f"{nom} {pourcentage(performance[nom])}"
-                   for nom in ("Erreurs critiques (2→0)", "Rappel classe 2") if nom in performance]
-        if "F1 macro" in performance:
-            mesures.append(f"F1 macro {format_valeur(performance['F1 macro'], 3)}")
-        if mesures:
-            st.markdown("Performance réelle : " + " · ".join(mesures) + " (« — » : non évaluable)")
+        # Performance attribuée à la version qui a fait chaque prédiction : seule la version en service
+        # déclenche une alerte critique ; une version historique ne prouve rien sur le modèle actuel
+        versions = performance.get("par_version") or {}
+        if versions:
+            st.markdown(f"Performance réelle par version (en service : "
+                        f"**{escape(str(performance.get('version_en_service')))}**) :")
+            st.dataframe(pd.DataFrame([
+                {"Version": version, "Statut": d["statut"], "Situations": d["situations_observees"],
+                 "Erreurs critiques": pourcentage(d.get("Erreurs critiques (2→0)")),
+                 "Rappel classe 2": pourcentage(d.get("Rappel classe 2")),
+                 "F1 macro": format_valeur(d.get("F1 macro"), 3)} for version, d in versions.items()]),
+                hide_index=True, width="stretch")
+            html('<p class="aide-saisie">« — » : non évaluable (trop peu d\'usagers). Une version '
+                 '« historique » n\'est plus en service : ses résultats éclairent les erreurs passées.</p>')
         cohortes = performance.get("cohortes_mures") or {}
         couverture = cohortes.get("couverture_par_classe_predite") or {}
         if couverture:

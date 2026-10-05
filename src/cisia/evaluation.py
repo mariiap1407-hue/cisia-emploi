@@ -69,10 +69,13 @@ def verifier_seuils_qualite(resultats):
     return echecs
 
 
-# Champion / challenger : le candidat est comparé au modèle EN PRODUCTION, sur le même jeu de test et
-# avec la même règle de décision. Critères par ordre de priorité (comparaison lexicographique) : une
-# erreur critique (chômeur de longue durée orienté en accompagnement léger) coûte bien plus cher qu'une
-# fausse alerte ; on ne regarde le critère suivant qu'en cas d'égalité sur le précédent.
+# Champion / challenger : le candidat est comparé au modèle EN PRODUCTION, sur le même jeu de test. Chacun
+# applique SA règle de décision (celle sauvegardée avec le champion, celle fournie au candidat) : si elles
+# diffèrent, on compare deux systèmes de décision complets, et c'est tracé (meme_regle, scripts/entrainer.py).
+# Critères par ordre de priorité (comparaison lexicographique) : une erreur critique (chômeur de longue
+# durée orienté en accompagnement léger) coûte bien plus cher qu'une fausse alerte ; on ne regarde le
+# critère suivant qu'en cas d'égalité sur le précédent. Conséquence voulue : une erreur critique évitée
+# peut justifier une baisse du rappel ou du F1, tant que les seuils minimaux (quality gate) sont respectés.
 CRITERES_CHAMPION = [("Nb erreurs critiques", "min"), ("Rappel classe 2", "max"), ("F1 macro", "max")]
 
 

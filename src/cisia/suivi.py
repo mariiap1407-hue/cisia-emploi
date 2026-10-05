@@ -19,6 +19,8 @@ Indicateurs :
 4. Performance réelle : mêmes seuils que le quality gate, chaque indicateur seulement s'il est ÉVALUABLE
    (rappel de la classe 2 et erreurs critiques : assez d'usagers réellement en classe 2 ; F1 macro : assez
    d'usagers dans chaque classe réelle). Un indicateur non évaluable n'est jamais une alerte.
+   Chaque étiquette est attribuée à la VERSION qui a fait la prédiction : seule la version en service
+   déclenche une alerte critique ; une version historique donne une alerte « attention » explicite.
    Risque de biais des étiquettes : provenance, et couverture par classe prédite sur les cohortes mûres.
 5. Synthèses : longueur comparée à l'entraînement (63 à 77 caractères), négations (limite connue, V2).
 6. Réentraînements : statuts, et retour arrière (pointeur rétabli ? alias du registre rétabli ? vérifié ?).
@@ -176,7 +178,7 @@ def taux_manquant(valeurs, marqueur):
         return None
     manquants = sum((isinstance(v, float) and np.isnan(v)) if marqueur is np.nan else v == marqueur
                     for v in valeurs)
-    return round(manquants / len(valeurs), 3)
+    return round(float(manquants) / len(valeurs), 3)   # float Python : pas « np.float64(...) » à l'écran
 
 
 def comparer_variable(variable, ref_valeurs, act_valeurs, n_cases, cardinalite_max):
@@ -264,34 +266,43 @@ def derive_par_semaine(reference, requetes, seuils):
 # --- Performance réelle ----------------------------------------------------------------------------
 
 def performance_observee(y_vrai, y_pred, seuils):
-    """Indicateurs du quality gate, chacun seulement s'il est évaluable (sinon None et une raison)."""
+    """Indicateurs du quality gate, chacun seulement s'il est évaluable (sinon None et une raison).
+
+    La comparaison aux seuils se fait sur la valeur BRUTE ; l'arrondi ne sert qu'à l'affichage
+    (sinon 10,05 % d'erreurs critiques, arrondi à 0,100, passerait sous le seuil de 10 %).
+    """
     y_vrai, y_pred = np.asarray(y_vrai), np.asarray(y_pred)
     n_par_classe = {c: int((y_vrai == c).sum()) for c in (0, 1, 2)}
-    resultats, non_evaluables = {"n_par_classe_reelle": {str(c): n for c, n in n_par_classe.items()}}, []
+    bruts, non_evaluables = {}, []
     if n_par_classe[2] >= seuils["min_classe_2_reelle"]:
         classe_2 = y_vrai == 2
-        resultats["Erreurs critiques (2→0)"] = round(float(taux_erreurs_critiques(y_vrai, y_pred)), 3)
-        resultats["Rappel classe 2"] = round(float((y_pred[classe_2] == 2).mean()), 3)
+        bruts["Erreurs critiques (2→0)"] = float(taux_erreurs_critiques(y_vrai, y_pred))
+        bruts["Rappel classe 2"] = float((y_pred[classe_2] == 2).mean())
     else:
-        resultats["Erreurs critiques (2→0)"] = resultats["Rappel classe 2"] = None
+        bruts["Erreurs critiques (2→0)"] = bruts["Rappel classe 2"] = None
         non_evaluables.append(f"erreurs critiques et rappel de la classe 2 : {n_par_classe[2]} usager(s) "
                               f"réellement en classe 2 (minimum {seuils['min_classe_2_reelle']})")
     if min(n_par_classe.values()) >= seuils["min_par_classe_reelle"]:
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", UndefinedMetricWarning)
             # Périmètre explicite : les trois classes, toutes présentes en nombre suffisant
-            f1 = f1_score(y_vrai, y_pred, labels=[0, 1, 2], average="macro")
-            resultats["F1 macro"] = round(float(f1), 3)
+            bruts["F1 macro"] = float(f1_score(y_vrai, y_pred, labels=[0, 1, 2], average="macro"))
     else:
-        resultats["F1 macro"] = None
+        bruts["F1 macro"] = None
         non_evaluables.append(f"F1 macro : moins de {seuils['min_par_classe_reelle']} usagers dans au moins "
                               f"une classe réelle ({n_par_classe})")
     echecs = []
     for indicateur, (sens, seuil) in SEUILS_QUALITE.items():
-        valeur = resultats[indicateur]
+        valeur = bruts[indicateur]
         if valeur is not None and ((sens == "max" and valeur > seuil) or (sens == "min" and valeur < seuil)):
-            echecs.append(f"{indicateur} = {valeur:.3f} (seuil {sens} : {seuil})")
+            echecs.append(f"{indicateur} = {valeur:.4f} (seuil {sens} : {seuil})")
+    resultats = {"n_par_classe_reelle": {str(c): n for c, n in n_par_classe.items()},
+                 **{nom: None if v is None else round(v, 3) for nom, v in bruts.items()}}
     return resultats, echecs, non_evaluables
+
+
+def version_de(ligne):
+    return ligne.get("version_modele") or "non précisée"
 
 
 # --- Rapport ----------------------------------------------------------------------------------------
@@ -395,21 +406,52 @@ def analyser(chemin_journal, seuils, jours=None, maintenant=None, reference=None
               if date_utc(f["date"]) and date_utc(toutes[f["id_prediction"]]["date"])]
     performance = {"situations_observees": len(recentes), "par_source": par_source,
                    "delai_median_jours": int(np.median(delais)) if delais else None}
-    if len(recentes) >= seuils["min_situations_observees"]:
-        y_vrai = [f["classe_reelle"] for f in recentes]
-        y_pred = [json.loads(toutes[f["id_prediction"]]["sorties"])["classe"] for f in recentes]
-        mesures, echecs, raisons = performance_observee(y_vrai, y_pred, seuils)
-        performance.update(mesures)
-        for raison in raisons:
-            non_evaluable("performance réelle", raison)
-        for echec in echecs:
-            alerter("critique", "performance réelle", "Seuil du quality gate non respecté sur les "
-                    f"situations observées : {echec}. Analyser les cas, puis envisager un réentraînement "
-                    "(/retrain).")
-    else:
-        non_evaluable("performance réelle", f"{len(recentes)} situation(s) observée(s) enregistrée(s) "
-                      f"sur {seuils['fenetre_etiquettes_jours']} jours "
-                      f"(minimum {seuils['min_situations_observees']})")
+    # Performance ATTRIBUÉE À CHAQUE VERSION : une étiquette juge la version qui a fait la prédiction. Seule
+    # la version EN SERVICE (celle de la dernière prédiction) peut déclencher une alerte critique ; une
+    # version historique éclaire les erreurs passées, sans prouver une dégradation du modèle actuel.
+    dernieres = sorted(toutes.values(), key=lambda r: (str(r["date"]), r["id_prediction"]))
+    en_service = version_de(dernieres[-1]) if dernieres else None
+    par_version = {}
+    for f in recentes:
+        par_version.setdefault(version_de(toutes[f["id_prediction"]]), []).append(f)
+    performance["version_en_service"] = en_service
+    performance["par_version"] = {}
+    for version in sorted(par_version, key=lambda v: (v != en_service, v)):
+        lignes = par_version[version]
+        statut = "en service" if version == en_service else "historique"
+        detail = {"statut": statut, "situations_observees": len(lignes)}
+        if len(lignes) >= seuils["min_situations_observees"]:
+            y_vrai = [f["classe_reelle"] for f in lignes]
+            y_pred = [json.loads(toutes[f["id_prediction"]]["sorties"])["classe"] for f in lignes]
+            mesures, echecs, raisons = performance_observee(y_vrai, y_pred, seuils)
+            detail.update(mesures)
+            for raison in raisons:
+                non_evaluable(f"performance réelle ({statut} : {version})", raison)
+            for echec in echecs:
+                if statut == "en service":
+                    alerter("critique", "performance réelle", f"Modèle en service ({version}) : seuil du "
+                            f"quality gate non respecté sur les situations observées : {echec}. Analyser les "
+                            "cas, puis envisager un réentraînement (/retrain).")
+                else:
+                    alerter("attention", "performance historique", f"Version {version}, qui n'est plus "
+                            f"en service : {echec}. Utile pour comprendre les erreurs passées ; ce n'est pas "
+                            "une preuve de dégradation du modèle actuel.")
+        else:
+            non_evaluable(f"performance réelle ({statut} : {version})",
+                          f"{len(lignes)} situation(s) observée(s) enregistrée(s) sur "
+                          f"{seuils['fenetre_etiquettes_jours']} jours "
+                          f"(minimum {seuils['min_situations_observees']})")
+        performance["par_version"][version] = detail
+    # Indicateurs principaux (tuiles) : ceux du modèle EN SERVICE seulement
+    courant = performance["par_version"].get(en_service, {})
+    for nom in ("n_par_classe_reelle", *SEUILS_QUALITE):
+        performance[nom] = courant.get(nom)
+    if en_service is None:
+        non_evaluable("performance réelle", "aucune prédiction acceptée dans le journal")
+    elif en_service not in par_version:
+        non_evaluable(f"performance réelle (en service : {en_service})",
+                      "aucune situation observée pour la version en service (les issues arrivent 6 à 12 mois "
+                      "après la prédiction)")
 
     # Risque de biais des étiquettes : couverture par classe prédite, sur des COHORTES MÛRES seulement
     fin_cohorte = maintenant - timedelta(days=seuils["maturite_jours"])
@@ -544,6 +586,7 @@ def analyser(chemin_journal, seuils, jours=None, maintenant=None, reference=None
                             seuils["psi_derive_cellule"])
     else:
         indicateurs["derive_des_donnees"] = {"statut": "non calculée (pas de référence : option --reference)"}
+        non_evaluable("dérive des données", "pas de référence (données d'entraînement) : option --reference")
 
     return {"date": maintenant.isoformat(timespec="seconds"),
             "periode": {"debut": debut.isoformat(timespec="seconds"), "jours": jours,

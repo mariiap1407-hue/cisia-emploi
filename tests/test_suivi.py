@@ -57,8 +57,8 @@ def test_acceptation_journal_sain_puis_degrade(journaux, tmp_path):
     indicateurs = {alerte["indicateur"] for alerte in rapport["alertes"]}
     assert indicateurs == {"erreurs du service", "latence", "répartition des prédictions",
                            "accord conseillers / modèle", "risque de biais des étiquettes",
-                           "performance réelle", "dérive des synthèses", "négations dans les synthèses",
-                           "registre MLflow"}
+                           "performance réelle", "performance historique", "dérive des synthèses",
+                           "négations dans les synthèses", "registre MLflow"}
     performance = rapport["indicateurs"]["performance_observee"]
     assert set(performance["par_source"]) == {"référentiel", "saisie manuelle"}
     # Étiquettes tardives : prédictions d'il y a 400 à 700 jours, situations observées saisies récemment
@@ -79,9 +79,9 @@ def test_peu_de_donnees_insuffisant_sans_alerte(tmp_path):
     rapport = analyser(tmp_path / "journal.db", SEUILS, maintenant=MAINTENANT)
     assert rapport["alertes"] == [] and code_de_sortie(rapport) == 0
     # « Aucune alerte » n'est pas « tout va bien » : les indicateurs non évaluables sont listés
-    non_evaluables = {element["indicateur"] for element in rapport["non_evaluables"]}
-    assert {"service (erreurs, refus, latence)", "performance réelle", "accord conseillers / modèle",
-            "risque de biais des étiquettes"} <= non_evaluables
+    non_evaluables = {element["indicateur"].split(" (")[0] for element in rapport["non_evaluables"]}
+    assert {"service", "performance réelle", "accord conseillers / modèle", "risque de biais des étiquettes",
+            "dérive des données"} <= non_evaluables
 
 
 def test_fenetre_glissante(tmp_path):
@@ -252,3 +252,46 @@ def test_psi_reference_constante_et_valeurs_manquantes(tmp_path):
     rapport = analyser(tmp_path / "journal.db", SEUILS, maintenant=MAINTENANT, reference=reference)
     manquants = [a for a in rapport["alertes"] if a["indicateur"] == "valeurs manquantes"]
     assert manquants and "« age »" in manquants[0]["message"] and manquants[0]["valeur"] == 0.9
+
+
+# --- Régression : relecture B10, 2e tour ------------------------------------------------------------------
+
+def test_performance_attribuee_a_la_version_qui_a_predit(tmp_path):
+    """Les erreurs d'une ancienne version ne sont pas présentées comme une dégradation du modèle actuel."""
+    journal = Journal(tmp_path / "journal.db")
+    for i in range(30):          # v0, historique : orientés « retour rapide », en fait longue durée
+        journal.enregistrer_inference(f"a{i}", (MAINTENANT - timedelta(days=600)).isoformat(), None, "ok",
+                                      sorties={"classe": 0}, version_modele="v0", duree_ms=20)
+        journal.enregistrer_feedback(f"a{i}", MAINTENANT.isoformat(), 2)
+    for i in range(30):          # v1, en service : bien orientés
+        journal.enregistrer_inference(f"b{i}", (MAINTENANT - timedelta(days=400)).isoformat(), None, "ok",
+                                      sorties={"classe": 2}, version_modele="v1", duree_ms=20)
+        journal.enregistrer_feedback(f"b{i}", MAINTENANT.isoformat(), 2)
+    journal.enregistrer_inference("r", MAINTENANT.isoformat(), None, "ok", sorties={"classe": 1},
+                                  version_modele="v1", duree_ms=20)
+    rapport = analyser(tmp_path / "journal.db", SEUILS, maintenant=MAINTENANT)
+    performance = rapport["indicateurs"]["performance_observee"]
+    assert performance["version_en_service"] == "v1"
+    assert performance["par_version"]["v0"]["statut"] == "historique"
+    assert performance["par_version"]["v0"]["Erreurs critiques (2→0)"] == 1.0
+    assert performance["Erreurs critiques (2→0)"] == 0.0          # tuile : le modèle en service seulement
+    alertes = [(a["niveau"], a["indicateur"]) for a in rapport["alertes"]]
+    assert ("attention", "performance historique") in alertes
+    assert ("critique", "performance réelle") not in alertes
+
+
+def test_seuil_compare_sur_la_valeur_brute():
+    """21 erreurs critiques sur 209 classes 2 réelles = 10,05 % > 10 % : alerte, même affichée 0,100."""
+    y_vrai = [2] * 209 + [0] * 10 + [1] * 10
+    y_pred = [0] * 21 + [2] * 188 + [0] * 10 + [1] * 10
+    mesures, echecs, _ = performance_observee(y_vrai, y_pred, SEUILS)
+    assert mesures["Erreurs critiques (2→0)"] == 0.1
+    assert any(e.startswith("Erreurs critiques") for e in echecs)
+
+
+def test_sans_reference_la_derive_est_non_evaluable(tmp_path):
+    """Sans --reference, la page ne doit pas dire « tous les indicateurs ont pu être évalués »."""
+    journal = Journal(tmp_path / "journal.db")
+    journal.enregistrer_inference("p", MAINTENANT.isoformat(), None, "ok", sorties={"classe": 1}, duree_ms=20)
+    rapport = analyser(tmp_path / "journal.db", SEUILS, maintenant=MAINTENANT)
+    assert any(e["indicateur"] == "dérive des données" for e in rapport["non_evaluables"])

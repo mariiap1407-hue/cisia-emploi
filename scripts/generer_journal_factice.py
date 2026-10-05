@@ -12,7 +12,8 @@ Usage (depuis la racine du projet) :
 Deux populations, comme dans la réalité (le délai réel n'est connu que 6 à 12 mois après la prédiction) :
 - RÉCENTE (6 dernières semaines) : prédictions et avis des conseillers, AUCUNE situation observée encore ;
 - MÛRE (prédictions de 400 à 700 jours) : situations observées enregistrées RÉCEMMENT (60 derniers jours),
-  depuis le référentiel ou par saisie manuelle. C'est sur elle que se mesure la performance réelle.
+  depuis le référentiel ou par saisie manuelle. C'est sur elle que se mesure la performance réelle, version
+  par version (factice-0 historique au-delà de 550 jours, factice-1 en service).
 
 Scénario « dégradé » : erreurs du service, latence élevée, beaucoup d'accompagnements renforcés,
 conseillers souvent en désaccord, synthèses longues avec négations, dérive localisée sur les métiers du
@@ -106,14 +107,18 @@ def remplir(journal, scenario, maintenant, graine=0, profils=None, nombre=4200, 
             else:
                 journal.enregistrer_avis(id_prediction, date, "corrige", (classe + 1) % 3, "Autre")
 
-    # 2. Cohorte mûre : prédictions d'il y a 400 à 700 jours, issues connues et saisies RÉCEMMENT
+    # 2. Cohorte mûre : prédictions d'il y a 400 à 700 jours, issues connues et saisies RÉCEMMENT. Deux
+    #    versions : factice-0 (plus de 550 jours, HISTORIQUE) et factice-1 (toujours EN SERVICE) : le suivi
+    #    attribue chaque situation observée à la version qui a fait la prédiction.
     for i in range(nombre_mures):
         id_prediction = f"FACTICE-{scenario}-M{i:04d}"
-        date = (maintenant - timedelta(days=alea.uniform(400, 700))).isoformat(timespec="milliseconds")
+        anciennete = alea.uniform(400, 700)
+        date = (maintenant - timedelta(days=anciennete)).isoformat(timespec="milliseconds")
         classe = alea.choices([0, 1, 2], poids_classes)[0]
         entrees = entrees_factices(alea, profils)
         journal.enregistrer_inference(id_prediction, date, None, "ok", entrees=entrees,
-                                      sorties=sorties_factices(alea, classe), version_modele="factice-0",
+                                      sorties=sorties_factices(alea, classe),
+                                      version_modele="factice-0" if anciennete > 550 else "factice-1",
                                       duree_ms=round(alea.uniform(12, 30), 2), id_usager=f"FACTICE-M{i:04d}")
         # Scénario dégradé : les usagers orientés en classe 1 ne sont presque jamais recontactés
         if i % 6 == 5 or (degrade and classe == 1 and alea.random() < 0.75):
