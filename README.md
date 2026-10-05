@@ -20,6 +20,18 @@ CI/CD et suivi en production.
 > Les vraies données (personnelles) ne sont **jamais** versionnées. La CI travaille sur des données
 > **factices** générées par un script ; le modèle réel est entraîné sur le poste, à côté des données.
 
+## Démonstration en ligne
+
+| | Adresse |
+|---|---|
+| Interface conseiller PHARE | https://phare-demo.onrender.com (accès par mot de passe, communiqué à part) |
+| API (documentation) | https://cisia-api.onrender.com/docs |
+
+Démonstration sur Render (offre gratuite, région Francfort) : **modèle de contrôle entraîné sur des
+données factices**, journal éphémère, données fictives uniquement. Les services s'endorment après
+15 minutes sans visite : le premier accès peut prendre environ une minute, et la première analyse peut
+échouer le temps que l'API se réveille (il suffit de recommencer).
+
 ---
 
 ## Démarrage rapide
@@ -65,7 +77,8 @@ Le journal des prédictions est `outputs/cisia.db`.
 ```bash
 docker compose up -d --build --wait
 ```
-L'image de l'API embarque le modèle de `models/production` (parcours B). Différences avec le poste :
+Arrêter d'abord `uvicorn` et `streamlit` lancés sur le poste : ils utilisent les mêmes ports (8000, 8501),
+et le conteneur concerné resterait à l'état « Created ». L'image de l'API embarque le modèle de `models/production` (parcours B). Différences avec le poste :
 - le journal est dans le **volume Docker `journal`** (pas dans `outputs/cisia.db` du poste) ;
 - le serveur MLflow de la pile (http://127.0.0.1:5000) a **sa propre base** (`./mlflow-data`), distincte
   de `mlflow.db` du poste. Pour y enregistrer un entraînement : `MLFLOW_TRACKING_URI=http://localhost:5000`.
@@ -79,7 +92,7 @@ Le rapport (`outputs/suivi/dernier_rapport.json`) est servi par `/suivi` et affi
 Code de sortie : 0 = aucune alerte, 1 = alerte « attention », 2 = alerte « critique ».
 
 Sous Docker, le script n'est pas dans l'image : copier le journal sur le poste, produire le rapport, puis
-le remettre dans le volume (procédure manuelle du prototype) :
+le remettre dans le volume (procédure manuelle du prototype, vérifiée le 05/10) :
 ```bash
 docker cp cisia-api:/app/outputs/cisia.db outputs/journal_docker.db
 python scripts/suivi.py --base outputs/journal_docker.db --sortie outputs/suivi_docker --production models/production
@@ -166,7 +179,9 @@ Une modification qui ne touche que la documentation peut être poussée sans rel
 - **Données d'entraînement peu variées** : les synthèses font toutes 63 à 77 caractères ; le modèle
   reconnaît des formulations plus qu'il ne comprend un texte libre (la négation n'est pas comprise).
 - **Démonstration** : l'API déployée sur Render utilise un modèle **factice**, avec un journal éphémère ;
-  `/retrain` y répond 503 (pas de données dans l'image). Le modèle réel reste sur le poste.
+  `/retrain` y répond 503 (pas de données dans l'image). Le modèle réel reste sur le poste. La CI vérifie
+  que l'interface répond après son déploiement, mais pas quelle version est servie (l'interface
+  n'expose pas de numéro de version, contrairement à l'API).
 - **Sécurité** : une clé d'API unique et partagée ; en production, authentification par l'annuaire
   (SSO) et droits par rôle.
 - **Suivi** : rapport lancé à la main (planification prévue en production) ; seuils de départ à
