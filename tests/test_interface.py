@@ -145,3 +145,20 @@ def test_page_suivi_du_modele(interface, tmp_path, donnees_factices):
     assert at.selectbox(key="suivi_variable").value == "age"
     at.selectbox(key="suivi_variable").set_value("anciennete_poste_ans").run()
     assert not at.exception
+
+
+def test_mot_de_passe_de_la_demonstration_en_ligne(interface, monkeypatch):
+    """Sur Render (CISIA_MOT_DE_PASSE défini) : rien n'est accessible sans le mot de passe."""
+    monkeypatch.setenv("CISIA_MOT_DE_PASSE", "mot-de-passe-de-test")
+    at, _ = interface
+    at.run()
+    assert not at.exception
+    assert "Nouvelle analyse" not in [b.label for b in at.button]          # rien d'autre n'est affiché
+    at.text_input(key="mot_de_passe").input("mauvais")
+    at.button[0].click().run()
+    assert any("incorrect" in str(e.value) for e in at.error)
+    assert "Nouvelle analyse" not in [b.label for b in at.button]
+    at.text_input(key="mot_de_passe").input("mot-de-passe-de-test")
+    at.button[0].click().run()
+    assert not at.exception and at.session_state["acces_ok"]
+    assert "Nouvelle analyse" in [b.label for b in at.button]

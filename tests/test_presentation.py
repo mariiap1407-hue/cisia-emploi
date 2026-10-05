@@ -22,6 +22,7 @@ from app.presentation import (
     lecture_explication,
     libelle_metier,
     libelle_rome,
+    mot_de_passe_valide,
     premier_entretien_valide,
     retour_conseiller,
     semaines_en_derive,
@@ -218,3 +219,11 @@ def test_tableau_de_bord_du_suivi():
     assert "#999999" in styles.loc[k, "2026-S39"]                                    # cellule absente
     rapport = {"alertes": [{"niveau": "attention"}, {"niveau": "critique"}]}
     assert [a["niveau"] for a in alertes_triees(rapport)] == ["critique", "attention"]
+
+
+def test_mot_de_passe_de_la_demonstration():
+    assert mot_de_passe_valide("Phare-2026", "Phare-2026")
+    assert not mot_de_passe_valide("phare-2026", "Phare-2026") and not mot_de_passe_valide("", "Phare-2026")
+    assert not mot_de_passe_valide(None, "Phare-2026")
+    assert mot_de_passe_valide("éclairé", "éclairé")              # accents : pas d'erreur (octets UTF-8)
+    assert mot_de_passe_valide("", None) and mot_de_passe_valide("", "")   # poste local : accès libre

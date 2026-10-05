@@ -16,7 +16,8 @@
 # Secrets et variables à définir dans GitHub (Settings > Secrets and variables > Actions) :
 # - secret RENDER_DEPLOY_HOOK : adresse de déclenchement du déploiement (fournie par Render) ;
 # - secret CISIA_CLE_API_DEMO : clé d'API du service de démonstration (la même que sur Render) ;
-# - variable RENDER_URL : adresse publique du service (ex. https://cisia-api.onrender.com).
+# - variable RENDER_URL : adresse publique du service (ex. https://cisia-api.onrender.com) ;
+# - interface PHARE (facultatif) : secret RENDER_DEPLOY_HOOK_UI et variable RENDER_URL_UI.
 
 name: CI/CD
 
@@ -108,8 +109,10 @@ jobs:
       packages: write
     env:
       IMAGE: ghcr.io/${{ github.repository }}/cisia-api
+      IMAGE_UI: ghcr.io/${{ github.repository }}/cisia-ui
     outputs:
       image: ${{ steps.publication.outputs.image }}
+      image_ui: ${{ steps.publication.outputs.image_ui }}
       version: ${{ steps.version.outputs.version }}
     steps:
       - uses: actions/checkout@v6
@@ -195,6 +198,14 @@ jobs:
           IMAGE_DIGEST=$(docker inspect --format='{{index .RepoDigests 0}}' "$IMAGE:controle-${GITHUB_SHA::7}")
           echo "Image publiée : $IMAGE_DIGEST"
           echo "image=$IMAGE_DIGEST" >> "$GITHUB_OUTPUT"
+          # Interface PHARE : image testée plus haut (elle démarre), sans modèle ni donnée ni clé
+          docker tag cisia-ui:ci "$IMAGE_UI:phare-${GITHUB_SHA::7}"
+          docker tag cisia-ui:ci "$IMAGE_UI:phare"
+          docker push "$IMAGE_UI:phare-${GITHUB_SHA::7}"
+          docker push "$IMAGE_UI:phare"
+          IMAGE_UI_DIGEST=$(docker inspect --format='{{index .RepoDigests 0}}' "$IMAGE_UI:phare-${GITHUB_SHA::7}")
+          echo "Image de l'interface publiée : $IMAGE_UI_DIGEST"
+          echo "image_ui=$IMAGE_UI_DIGEST" >> "$GITHUB_OUTPUT"
 
   deploy-demo:
     needs: build-test-push
@@ -238,3 +249,27 @@ jobs:
           python3 scripts/verifier_service.py "$URL" --cle "$CLE" \
             --version "${{ needs.build-test-push.outputs.version }}" --essais 90 --pause 10 --duree-max 900 \
             --retrain 503
+
+      # Interface PHARE (second service Render, protégé par un mot de passe défini SUR RENDER seulement).
+      # Tant que le service n'est pas créé (secret absent), l'étape est ignorée sans faire échouer la CI.
+      - name: Déployer l'interface PHARE
+        env:
+          HOOK_UI: ${{ secrets.RENDER_DEPLOY_HOOK_UI }}
+          URL_UI: ${{ vars.RENDER_URL_UI }}
+          IMAGE_REF: ${{ needs.build-test-push.outputs.image_ui }}
+        run: |
+          if [ -z "$HOOK_UI" ] || [ -z "$URL_UI" ]; then
+            echo "Interface non configurée sur Render (secret RENDER_DEPLOY_HOOK_UI / variable RENDER_URL_UI) : ignoré"
+            exit 0
+          fi
+          echo "Déploiement de $IMAGE_REF"
+          IMAGE_URL=$(python3 -c "import urllib.parse, os; print(urllib.parse.quote(os.environ['IMAGE_REF'], safe=''))")
+          curl -fsS --max-time 30 -X POST "$HOOK_UI&imgURL=$IMAGE_URL" > /dev/null
+          # Attente active : l'interface répond sur /_stcore/health (15 minutes au maximum)
+          for essai in $(seq 1 90); do
+            if curl -fsS --max-time 10 "$URL_UI/_stcore/health" > /dev/null; then
+              echo "Interface en ligne (essai $essai)"; exit 0
+            fi
+            sleep 10
+          done
+          echo "L'interface ne répond pas après 15 minutes"; exit 1

@@ -5,6 +5,7 @@ niveau d'alerte → risque en %, au second plan.
 """
 
 import calendar
+import hmac
 import json
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -354,3 +355,10 @@ def style_cellule(valeur, derive):
     if valeur >= 0.10:
         return "background-color: #fde3a7; color: #161616"
     return "background-color: #ffffff; color: #161616"
+
+
+def mot_de_passe_valide(saisi, attendu):
+    """Comparaison à temps constant, en octets UTF-8 (comme la clé d'API : accents acceptés)."""
+    if not attendu:
+        return True                       # pas de mot de passe configuré (poste local) : accès libre
+    return hmac.compare_digest((saisi or "").encode("utf-8"), attendu.encode("utf-8"))

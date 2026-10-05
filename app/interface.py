@@ -3,9 +3,13 @@
 Écrans : nouvelle analyse (formulaire) → résultat → appréciation du conseiller ; historique ; aide.
 Lancement (depuis la racine du projet, l'API tournant à côté) :
     streamlit run app/interface.py
+
+Accès protégé par un mot de passe si CISIA_MOT_DE_PASSE est défini (démonstration en ligne sur Render) ;
+sans cette variable (poste local), pas d'écran de connexion. Le mot de passe n'est jamais versionné.
 """
 
 import base64
+import os
 import time
 from datetime import date, datetime, timezone
 from html import escape
@@ -35,6 +39,7 @@ from presentation import (
     format_valeur,
     lecture_explication,
     libelle_metier,
+    mot_de_passe_valide,
     premier_entretien_valide,
     retour_conseiller,
     semaines_en_derive,
@@ -97,6 +102,25 @@ def afficher_message():
         genre, texte = etat.message
         (st.success if genre == "ok" else st.error)(texte)
         etat.message = None
+
+
+# --- Accès protégé (démonstration en ligne) ----------------------------------------------------
+# Sans mot de passe, n'importe qui pourrait utiliser l'application et consulter l'historique (fictif).
+
+MOT_DE_PASSE = os.getenv("CISIA_MOT_DE_PASSE")
+if MOT_DE_PASSE and not etat.get("acces_ok"):
+    _, centre, _ = st.columns([1, 1.2, 1])
+    with centre:
+        st.image(str(LOGO), width=260)
+        prototype()
+        with st.form("connexion"):
+            saisi = st.text_input("Mot de passe", type="password", key="mot_de_passe")
+            if st.form_submit_button("Accéder à PHARE →"):
+                if mot_de_passe_valide(saisi, MOT_DE_PASSE):
+                    etat.acces_ok = True
+                    st.rerun()
+                st.error("Mot de passe incorrect.")
+    st.stop()
 
 
 # --- Écran d'accueil : animation jouée une seule fois par session --------------------------------
