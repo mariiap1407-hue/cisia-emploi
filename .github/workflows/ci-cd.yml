@@ -160,8 +160,9 @@ jobs:
 
       - name: Tester l'image AVANT publication
         run: |
-          CLE=$(python3 -c 'import secrets; print(secrets.token_hex(16))')   # clé jetable, propre à ce test
-          echo "::add-mask::$CLE"
+          # Clé jetable, propre à ce test, jamais affichée (pas de ::add-mask:: : la ligne de la commande
+          # apparaissait en clair dans le journal du run)
+          CLE=$(python3 -c 'import secrets; print(secrets.token_hex(16))')
           docker run -d --name api-test -p 8000:8000 -e CISIA_CLE_API="$CLE" cisia-api:ci
           python3 scripts/verifier_service.py http://127.0.0.1:8000 --cle "$CLE" \
             --version "${{ steps.version.outputs.version }}" --essais 30 --pause 2 --retrain 503

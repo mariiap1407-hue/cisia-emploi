@@ -22,6 +22,7 @@ from cisia.suivi import (
     performance_observee,
     psi_categoriel,
     psi_numerique,
+    version_depuis_production,
 )
 
 RACINE = Path(__file__).resolve().parents[1]
@@ -295,3 +296,74 @@ def test_sans_reference_la_derive_est_non_evaluable(tmp_path):
     journal.enregistrer_inference("p", MAINTENANT.isoformat(), None, "ok", sorties={"classe": 1}, duree_ms=20)
     rapport = analyser(tmp_path / "journal.db", SEUILS, maintenant=MAINTENANT)
     assert any(e["indicateur"] == "dérive des données" for e in rapport["non_evaluables"])
+
+
+# --- Régression : relecture B10, 3e tour (version EN SERVICE ≠ version de la dernière prédiction) ----------
+
+def journal_v1_en_erreur(chemin):
+    """30 prédictions de v1 (il y a 400 jours), toutes en erreur critique observée ; dernière requête : v1."""
+    journal = Journal(chemin)
+    for i in range(30):
+        journal.enregistrer_inference(f"p{i}", (MAINTENANT - timedelta(days=400)).isoformat(), None, "ok",
+                                      sorties={"classe": 0}, version_modele="v1", duree_ms=20)
+        journal.enregistrer_feedback(f"p{i}", MAINTENANT.isoformat(), 2)
+    journal.enregistrer_inference("r", (MAINTENANT - timedelta(days=2)).isoformat(), None, "ok",
+                                  sorties={"classe": 1}, version_modele="v1", duree_ms=20)
+    return journal
+
+
+def niveaux_performance(rapport):
+    return {(a["niveau"], a["indicateur"]) for a in rapport["alertes"] if "performance" in a["indicateur"]}
+
+
+def test_promotion_sans_nouvelle_prediction(tmp_path):
+    """v1 → v2 mis en production APRÈS la dernière prédiction : v1 est historique, v2 non évaluable."""
+    journal = journal_v1_en_erreur(tmp_path / "journal.db")
+    date = (MAINTENANT - timedelta(days=1)).isoformat()
+    journal.enregistrer_reentrainement(date, date, "mis_en_production", 40, "run", "v1", "v2")
+    rapport = analyser(tmp_path / "journal.db", SEUILS, maintenant=MAINTENANT)
+    performance = rapport["indicateurs"]["performance_observee"]
+    assert performance["version_en_service"] == "v2"
+    assert "réentraînement" in performance["source_version_en_service"]
+    assert performance["par_version"]["v1"]["statut"] == "historique"
+    assert niveaux_performance(rapport) == {("attention", "performance historique")}
+    assert any(e["indicateur"] == "performance réelle (en service : v2)" for e in rapport["non_evaluables"])
+
+
+def test_retour_arriere_sans_nouvelle_prediction(tmp_path):
+    """v2 a prédit (erreurs), puis un réentraînement échoue et revient à v1 (vérifié) : v2 est historique."""
+    journal = Journal(tmp_path / "journal.db")
+    for i in range(30):
+        journal.enregistrer_inference(f"p{i}", (MAINTENANT - timedelta(days=400)).isoformat(), None, "ok",
+                                      sorties={"classe": 0}, version_modele="v2", duree_ms=20)
+        journal.enregistrer_feedback(f"p{i}", MAINTENANT.isoformat(), 2)
+    date = (MAINTENANT - timedelta(days=1)).isoformat()
+    retour = {"necessaire": True, "pointeur_retabli": True, "alias_retabli": True, "verifie": True}
+    journal.enregistrer_reentrainement(date, date, "erreur_activation", 40, "run", "v1", "v3",
+                                       resultats={"retour_arriere": retour})
+    performance = analyser(tmp_path / "journal.db", SEUILS, maintenant=MAINTENANT)["indicateurs"][
+        "performance_observee"]
+    assert performance["version_en_service"] == "v1"
+    assert performance["par_version"]["v2"]["statut"] == "historique"
+
+
+def test_la_source_du_deploiement_fait_foi(tmp_path):
+    """actuelle.json (lu par l'API) prime sur le journal ; la source est indiquée dans le rapport."""
+    journal_v1_en_erreur(tmp_path / "journal.db")
+    production = tmp_path / "production"
+    production.mkdir()
+    (production / "actuelle.json").write_text(json.dumps({"dossier": "x", "version_registre": 7}),
+                                              encoding="utf-8")
+    assert version_depuis_production(production) == "7"
+    assert version_depuis_production(tmp_path / "absent") is None
+    rapport = analyser(tmp_path / "journal.db", SEUILS, maintenant=MAINTENANT,
+                       version_en_service=version_depuis_production(production))
+    performance = rapport["indicateurs"]["performance_observee"]
+    assert performance["version_en_service"] == "7"
+    assert performance["source_version_en_service"] == "déploiement (actuelle.json)"
+    assert niveaux_performance(rapport) == {("attention", "performance historique")}
+    # Sans source qui fait foi ni réentraînement : la dernière prédiction, et la source le dit
+    rapport = analyser(tmp_path / "journal.db", SEUILS, maintenant=MAINTENANT)
+    assert rapport["indicateurs"]["performance_observee"]["source_version_en_service"] == \
+        "journal : dernière prédiction"
+    assert ("critique", "performance réelle") in niveaux_performance(rapport)

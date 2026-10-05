@@ -213,9 +213,9 @@ def creer_application(dossier_production=None, chemin_base=None, cle_api=None, d
     def suivi():
         """Dernier rapport de suivi (indicateurs, alertes, dérive par semaine et par métier).
 
-        Le rapport est produit par scripts/suivi.py (planifié chaque jour, à côté du journal et des
-        données d'entraînement) ; l'API le sert tel quel. Réservé à l'équipe data en production
-        (droits par rôle)."""
+        Le rapport est produit par scripts/suivi.py (lancé à la main dans le prototype ; planifié chaque
+        jour en production, à côté du journal et des données d'entraînement) ; l'API le sert tel quel.
+        Réservé à l'équipe data en production (droits par rôle)."""
         chemin = dossier_suivi / "dernier_rapport.json"
         if not chemin.exists():
             raise HTTPException(status_code=404, detail="Aucun rapport de suivi : lancer scripts/suivi.py.")

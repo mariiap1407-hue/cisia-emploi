@@ -5,6 +5,10 @@ Usage (depuis la racine du projet) :
     python scripts/suivi.py --base outputs/suivi_demo/journal_degrade.db --jours 3650
     python scripts/suivi.py --reference data/raw/dataset_trajectoire_emploi.csv   # + dérive (PSI, KS)
 
+Version EN SERVICE : lue dans models/production/actuelle.json (source qui fait foi, celle de l'API) pour le
+journal réel, ou dans le dossier donné par --production ; sinon déduite du dernier événement du journal
+(prédiction ou réentraînement), et la source est indiquée dans le rapport.
+
 Avec --reference, la dérive des données est mesurée par rapport à la partie ENTRAÎNEMENT de ce fichier
 (même découpage que l'entraînement). En production, le profil de référence serait enregistré avec le
 modèle au moment de l'entraînement, pour ne pas relire les données d'origine.
@@ -36,7 +40,7 @@ from pathlib import Path
 import pandas as pd
 
 from cisia.preparation import charger_donnees, decouper
-from cisia.suivi import analyser, code_de_sortie
+from cisia.suivi import analyser, code_de_sortie, version_depuis_production
 
 RACINE = Path(__file__).resolve().parents[1]
 NIVEAUX_LOG = {"attention": logging.WARNING, "critique": logging.CRITICAL}
@@ -77,6 +81,10 @@ def main():
                         help="fenêtre glissante, en jours (défaut : fichier de seuils)")
     parser.add_argument("--reference", default=None,
                         help="données d'entraînement (CSV) pour mesurer la dérive (PSI, Kolmogorov-Smirnov)")
+    parser.add_argument("--production", default=None,
+                        help="dossier du modèle en production (actuelle.json) : source qui fait foi pour la "
+                             "version en service. Défaut : models/production pour le journal réel ; aucun "
+                             "pour un autre journal (version déduite du journal, source indiquée)")
     parser.add_argument("--sortie", default=str(RACINE / "outputs" / "suivi"),
                         help="dossier du rapport JSON et du journal des alertes")
     args = parser.parse_args()
@@ -89,7 +97,10 @@ def main():
     if args.reference:
         entrainement, _ = decouper(charger_donnees(args.reference))
         reference = entrainement[COLONNES_PROFIL].to_dict("records")
-    rapport = analyser(args.base, seuils, args.jours, reference=reference)
+    journal_reel = Path(args.base).resolve() == (RACINE / "outputs" / "cisia.db").resolve()
+    production = args.production or (RACINE / "models" / "production" if journal_reel else None)
+    version = version_depuis_production(production) if production else None
+    rapport = analyser(args.base, seuils, args.jours, reference=reference, version_en_service=version)
     afficher(rapport)
 
     sortie = Path(args.sortie)

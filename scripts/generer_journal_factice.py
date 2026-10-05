@@ -142,7 +142,7 @@ def remplir(journal, scenario, maintenant, graine=0, profils=None, nombre=4200, 
             message_erreur="factice")
     else:
         journal.enregistrer_reentrainement(debut, debut, "mis_en_production", 40, "run-factice",
-                                           "factice-1", "factice-2", resultats={"resultats_test": {}})
+                                           "factice-0", "factice-1", resultats={"resultats_test": {}})
 
 
 def ancrage_semaine(maintenant):

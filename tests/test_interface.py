@@ -139,6 +139,7 @@ def test_page_suivi_du_modele(interface, tmp_path, donnees_factices):
     assert "risque de biais des étiquettes" in affiche
     assert "Cohortes mûres" in affiche and "None" not in affiche
     assert "Performance réelle par version (en service" in affiche              # attribution par version
+    assert "source : journal" in affiche                                       # d'où vient la version
     assert len(at.dataframe) >= 2                                            # tableau PSI + carte par métier
     # La carte s'ouvre sur la variable de l'alerte « dérive localisée » (l'âge dans ce scénario)
     assert at.selectbox(key="suivi_variable").value == "age"

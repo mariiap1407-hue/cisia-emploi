@@ -679,8 +679,10 @@ def page_suivi():
         if carte.empty:
             st.info("Pas assez d'usagers par métier et par semaine pour cette variable.")
         else:
-            st.dataframe(carte.style.apply(lambda _: styles, axis=None).format("{:.2f}", na_rep="—"),
-                         width="stretch")
+            # Texte déjà formaté (« — » écrit dans la cellule) : la mise en forme du Styler n'est pas
+            # toujours appliquée par st.dataframe (« None » s'affichait dans le navigateur)
+            affichee = carte.apply(lambda colonne: colonne.map(lambda v: f"{v:.2f}" if v == v else "—"))
+            st.dataframe(affichee.style.apply(lambda _: styles, axis=None), width="stretch")
             html('<p class="aide-saisie">Chaque métier est comparé au MÊME métier dans l\'entraînement. '
                  'Rouge : dérive retenue (PSI ≥ 0,35 ET KS significatif) ; orangé : PSI ≥ 0,10, à '
                  'surveiller ; « — » : moins de 50 usagers dans la cellule. Un écart localisé sur un métier '
@@ -700,7 +702,8 @@ def page_suivi():
         versions = performance.get("par_version") or {}
         if versions:
             st.markdown(f"Performance réelle par version (en service : "
-                        f"**{escape(str(performance.get('version_en_service')))}**) :")
+                        f"**{escape(str(performance.get('version_en_service') or 'inconnue'))}** — source : "
+                        f"{escape(str(performance.get('source_version_en_service') or '—'))}) :")
             st.dataframe(pd.DataFrame([
                 {"Version": version, "Statut": d["statut"], "Situations": d["situations_observees"],
                  "Erreurs critiques": pourcentage(d.get("Erreurs critiques (2→0)")),

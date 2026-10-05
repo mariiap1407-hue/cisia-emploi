@@ -305,10 +305,57 @@ def version_de(ligne):
     return ligne.get("version_modele") or "non précisée"
 
 
+# --- Version en service ---------------------------------------------------------------------------
+
+def version_depuis_production(dossier_production):
+    """Version réellement en service, lue dans actuelle.json (le fichier que lit l'API : il fait foi).
+
+    Même identifiant que celui que l'API écrit dans le journal (version du registre, sinon run).
+    None si le dossier ou le fichier n'existe pas.
+    """
+    chemin = Path(dossier_production) / "actuelle.json"
+    if not chemin.exists():
+        return None
+    infos = json.loads(chemin.read_text(encoding="utf-8"))
+    return str(infos.get("version_registre") or infos.get("run_id") or "inconnue")
+
+
+def version_en_service_du_journal(journal, predictions):
+    """À défaut de source qui fait foi : l'événement le plus RÉCENT du journal, prédiction ou réentraînement.
+
+    Une promotion sans nouvelle prédiction met bien en service la nouvelle version ; un échec avec retour
+    arrière VÉRIFIÉ laisse l'ancienne ; un échec non vérifié rend la version inconnue (None).
+    Renvoie (version, source).
+    """
+    evenements = []
+    for r in predictions:
+        evenements.append((date_utc(r["date"]), 0, version_de(r), "journal : dernière prédiction"))
+    for r in journal["reentrainements"]:
+        retour = (json.loads(r["resultats"]) if r.get("resultats") else {}).get("retour_arriere") or {}
+        if r["statut"] == "mis_en_production":
+            version = r.get("version_apres")
+        elif r["statut"] in ("erreur", "erreur_activation") and not (
+                retour.get("verifie") and retour.get("pointeur_retabli") is not False):
+            version = None                                  # retour arrière non confirmé : version incertaine
+        else:
+            version = r.get("version_avant")                # refusé, non promu, ou retour arrière vérifié
+        date = date_utc(r.get("date_fin")) or date_utc(r.get("date_debut"))
+        evenements.append((date, 1, version, f"journal : réentraînement « {r['statut']} »"))
+    evenements = [e for e in evenements if e[0] is not None]
+    if not evenements:
+        return None, "journal vide"
+    _, _, version, source = max(evenements, key=lambda e: (e[0], e[1]))
+    return version, source
+
+
 # --- Rapport ----------------------------------------------------------------------------------------
 
-def analyser(chemin_journal, seuils, jours=None, maintenant=None, reference=None):
-    """Rapport de suivi : périodes, indicateurs, alertes, et indicateurs NON ÉVALUABLES (avec la raison)."""
+def analyser(chemin_journal, seuils, jours=None, maintenant=None, reference=None, version_en_service=None):
+    """Rapport de suivi : périodes, indicateurs, alertes, et indicateurs NON ÉVALUABLES (avec la raison).
+
+    version_en_service : version réellement chargée (source qui fait foi : actuelle.json, voir
+    version_depuis_production). À défaut, elle est déduite du dernier événement du journal (source indiquée).
+    """
     jours = jours or seuils["fenetre_jours"]
     maintenant = maintenant or datetime.now(timezone.utc)
     debut = maintenant - timedelta(days=jours)
@@ -407,14 +454,19 @@ def analyser(chemin_journal, seuils, jours=None, maintenant=None, reference=None
     performance = {"situations_observees": len(recentes), "par_source": par_source,
                    "delai_median_jours": int(np.median(delais)) if delais else None}
     # Performance ATTRIBUÉE À CHAQUE VERSION : une étiquette juge la version qui a fait la prédiction. Seule
-    # la version EN SERVICE (celle de la dernière prédiction) peut déclencher une alerte critique ; une
-    # version historique éclaire les erreurs passées, sans prouver une dégradation du modèle actuel.
-    dernieres = sorted(toutes.values(), key=lambda r: (str(r["date"]), r["id_prediction"]))
-    en_service = version_de(dernieres[-1]) if dernieres else None
+    # la version EN SERVICE peut déclencher une alerte critique ; une version historique éclaire les erreurs
+    # passées, sans prouver une dégradation du modèle actuel. La version en service vient de la source qui
+    # fait foi (actuelle.json) ; sinon du dernier événement du journal (prédiction OU réentraînement : une
+    # promotion sans nouvelle prédiction compte), et la source est affichée.
+    if version_en_service is not None:
+        en_service, source = str(version_en_service), "déploiement (actuelle.json)"
+    else:
+        en_service, source = version_en_service_du_journal(journal, list(toutes.values()))
     par_version = {}
     for f in recentes:
         par_version.setdefault(version_de(toutes[f["id_prediction"]]), []).append(f)
     performance["version_en_service"] = en_service
+    performance["source_version_en_service"] = source
     performance["par_version"] = {}
     for version in sorted(par_version, key=lambda v: (v != en_service, v)):
         lignes = par_version[version]
@@ -447,7 +499,8 @@ def analyser(chemin_journal, seuils, jours=None, maintenant=None, reference=None
     for nom in ("n_par_classe_reelle", *SEUILS_QUALITE):
         performance[nom] = courant.get(nom)
     if en_service is None:
-        non_evaluable("performance réelle", "aucune prédiction acceptée dans le journal")
+        non_evaluable("performance réelle (en service : inconnue)",
+                      f"version en service inconnue ({source}) : aucune version n'est jugée comme actuelle")
     elif en_service not in par_version:
         non_evaluable(f"performance réelle (en service : {en_service})",
                       "aucune situation observée pour la version en service (les issues arrivent 6 à 12 mois "
